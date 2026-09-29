@@ -63,7 +63,7 @@ export default function StudentCsvImport({ token, refresh, showNotice }: Props) 
   const importStudents = async () => {
     setBusy(true); let created = 0; let rejected = 0
     for (const row of validRows) {
-      const response = await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ role: 'Student', name: row.name, studentId: row.studentId, classSection: row.classSection }) })
+      const response = await fetch('https://cbt-exam-platform-production.up.railway.app/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ role: 'Student', name: row.name, studentId: row.studentId, classSection: row.classSection }) })
       if (response.ok) created += 1
       else rejected += 1
     }

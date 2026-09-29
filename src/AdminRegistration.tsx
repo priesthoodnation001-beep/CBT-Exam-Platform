@@ -9,7 +9,7 @@ export default function AdminRegistration({ onBack, onComplete }: Props) {
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setBusy(true); setError('')
     const values = new FormData(event.currentTarget)
-    const response = await fetch('/api/register-admin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: values.get('name'), username: values.get('username'), password: values.get('password') }) })
+    const response = await fetch('https://cbt-exam-platform-production.up.railway.app/api/register-admin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: values.get('name'), username: values.get('username'), password: values.get('password') }) })
     if (!response.ok) { const body = await response.json().catch(() => ({ error: 'Could not create Admin account.' })); setError(body.error); setBusy(false); return }
     setBusy(false); onComplete()
   }

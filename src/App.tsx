@@ -21,7 +21,7 @@ type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: R
 const emptyData: Data = { users: [], exams: [], questions: [], results: [], subjects: [] }
 
 async function api<T>(path: string, token: string | null, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) } })
+  const response = await fetch(`https://cbt-exam-platform-production.up.railway.app/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) } })
   if (!response.ok) { const error = await response.json().catch(() => ({ error: 'Request failed.' })); throw new Error(error.error || 'Request failed.') }
   return response.status === 204 ? undefined as T : response.json()
 }

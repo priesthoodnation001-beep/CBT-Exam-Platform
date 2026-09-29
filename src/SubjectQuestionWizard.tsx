@@ -7,7 +7,7 @@ type DraftQuestion = { subject: string; text: string; options: string[]; answer:
 type Props = { questions: Question[]; exams: Exam[]; token: string | null; refresh: () => Promise<void>; showNotice: (message: string) => void }
 
 async function saveQuestion(token: string | null, question: DraftQuestion) {
-  const response = await fetch('/api/questions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(question) })
+  const response = await fetch('https://cbt-exam-platform-production.up.railway.app/api/questions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(question) })
   if (!response.ok) { const error = await response.json().catch(() => ({ error: 'Could not save question.' })); throw new Error(error.error) }
 }
 
@@ -31,7 +31,7 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
     const finalDraft = draft.length > step ? draft.map((item, index) => index === step ? current : item) : [...draft, current]
     if (duration < 1 || duration > 30) { showNotice('Subject time must be between 1 and 30 minutes.'); return }
     try {
-      const setting = await fetch('/api/subjects', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ subject, duration }) })
+      const setting = await fetch('https://cbt-exam-platform-production.up.railway.app/api/subjects', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ subject, duration }) })
       if (!setting.ok) { const error = await setting.json().catch(() => ({ error: 'Could not save subject time.' })); throw new Error(error.error) }
       for (const question of finalDraft) await saveQuestion(token, question)
       setDraft([]); setStep(0); setSubject(''); setDuration(30); setForm({ text: '', options: ['', '', '', ''], answer: 0 }); await refresh(); showNotice(`${subject} submitted for Admin approval.`)
