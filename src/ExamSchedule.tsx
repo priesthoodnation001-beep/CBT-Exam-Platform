@@ -1,6 +1,6 @@
 import type { FormEvent } from 'react'
 
-type Exam = { id: string; title: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published' }
+type Exam = { id: string; title: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number }
 type Props = { exams: Exam[]; showForm: boolean; setShowForm: (value: boolean) => void; addExam: (event: FormEvent<HTMLFormElement>) => void; deleteExam: (exam: Exam) => void }
 
 export default function ExamSchedule({ exams, showForm, setShowForm, addExam, deleteExam }: Props) {
