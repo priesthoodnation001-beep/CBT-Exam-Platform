@@ -1,0 +1,45 @@
+{
+  "name": "cbt-exam-software",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "node server/index.cjs",
+    "dev:full": "npm run server",
+    "build": "tsc -b && vite build",
+    "desktop:build": "npm run build && electron-builder --win --x64",
+    "android:sync": "npm run build && cap sync android",
+    "android:open": "cap open android",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "sql.js": "^1.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "oxlint": "^1.81.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0",
+    "@capacitor/cli": "^7.4.3",
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/core": "^7.4.3",
+    "electron": "^38.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "edu.timpriest.cbt",
+    "productName": "TIMPRIEST EDU CBT",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "server/**/*", "electron/**/*", "package.json", "node_modules/**/*"],
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true }
+  }
+}
