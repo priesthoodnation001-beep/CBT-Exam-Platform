@@ -77,12 +77,16 @@ function requireRole(...roles) {
 app.get('/api/health', (_request, response) => response.json({ ok: true, database: 'SQLite', name: 'TIMPRIEST EDU' }))
 
 app.post('/api/register-admin', (request, response) => {
-  const { name, username, password } = request.body || {}
+  const { name, username, password, schoolName } = request.body || {}
+  if (rows("SELECT id FROM users WHERE role = 'Admin' AND deleted = 0").length) return response.status(403).json({ error: 'This school already has an Admin. Please sign in instead.' })
+  if (!String(schoolName || '').trim()) return response.status(400).json({ error: 'School name is required.' })
   if (!name || !username || !password || String(password).length < 6) return response.status(400).json({ error: 'Name, username, and a password of at least 6 characters are required.' })
   if (rows('SELECT id FROM users WHERE lower(username) = lower(?) AND deleted = 0', [String(username).trim()]).length) return response.status(409).json({ error: 'That Admin username is already in use.' })
   const id = crypto.randomUUID()
   run('INSERT INTO users (id, role, name, username, password_hash, student_id, class_section, deleted) VALUES (?, \'Admin\', ?, ?, ?, NULL, NULL, 0)', [id, String(name).trim(), String(username).trim(), hashPassword(String(password))])
+  run("INSERT INTO settings (key, value) VALUES ('school_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [String(schoolName).trim()])
   response.status(201).json({ message: 'Admin account created.' })
+  db.run('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
 })
 
 app.post('/api/login', (request, response) => {
@@ -105,7 +109,7 @@ app.get('/api/data', authenticate, (request, response) => {
   const questionSql = request.user.role === 'Student' ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.approved = 1 ORDER BY questions.created_at' : 'SELECT id, exam_id, subject, text, options, answer FROM questions ORDER BY created_at'
   const questions = rows(questionSql).map((question) => publicQuestion(question, includeAnswers))
   const results = request.user.role === 'Admin' ? rows(`SELECT submissions.id, submissions.score, submissions.total, submissions.submitted_at, exams.title AS exam_title, users.name AS student_name, users.student_id FROM submissions JOIN exams ON exams.id = submissions.exam_id JOIN users ON users.id = submissions.student_id ORDER BY submissions.submitted_at DESC`) : []
-  response.json({ users, exams, questions, results, subjects })
+  response.json({ users, exams, questions, results, subjects, schoolName: rows("SELECT value FROM settings WHERE key = 'school_name'").at(0)?.value || 'Your School' })
 })
 
 app.post('/api/users', authenticate, requireRole('Admin'), (request, response) => {
@@ -219,6 +223,9 @@ async function start() {
     run('INSERT INTO questions (id, exam_id, subject, text, options, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', ['q-2', 'exam-1', 'Mathematics', 'Which number is a prime number?', JSON.stringify(['21', '27', '31', '39']), 2, Date.now()])
   }
   if (!rows('SELECT subject FROM subject_settings WHERE subject = ?', ['Mathematics']).length) run('INSERT INTO subject_settings (subject, duration, approved, approved_at) VALUES (?, ?, 1, ?)', ['Mathematics', 30, new Date().toISOString()])
+    run("DELETE FROM users WHERE id IN ('admin-1', 'teacher-1', 'student-1')")
+  run("DELETE FROM exams WHERE id IN ('exam-1', 'exam-2')")
+  run("DELETE FROM questions WHERE id IN ('q-1', 'q-2')")
   persist()
   app.listen(PORT, '0.0.0.0', () => console.log(`TIMPRIEST EDU LAN backend running on http://0.0.0.0:${PORT}`))
 }
