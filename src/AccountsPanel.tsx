@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { FormEvent } from 'react'
 import StudentCsvImport from './StudentCsvImport'
 
@@ -6,5 +7,57 @@ type Account = { id: string; role: Role; name: string; username?: string; studen
 type Props = { accounts: Account[]; token: string | null; showForm: boolean; setShowForm: (value: boolean) => void; addAccount: (event: FormEvent<HTMLFormElement>) => void; deleteAccount: (account: Account) => void; refresh: () => Promise<void>; showNotice: (message: string) => void }
 
 export default function AccountsPanel({ accounts, token, showForm, setShowForm, addAccount, deleteAccount, refresh, showNotice }: Props) {
-  return <><div className="section-heading"><div><p className="eyebrow">Access management</p><h2>Teacher and student accounts</h2></div><button className="primary-button" onClick={() => setShowForm(!showForm)}>+ Create account</button></div><StudentCsvImport token={token} refresh={refresh} showNotice={showNotice} />{showForm && <form className="form-panel" onSubmit={addAccount}><h3>Create login credentials</h3><div className="form-grid"><label>Account type<select name="role" defaultValue="Teacher"><option>Teacher</option><option>Student</option></select></label><label>Full name<input name="name" required placeholder="e.g. Grace Asante" /></label><label>Username<input name="username" placeholder="Required for teacher" /></label><label>Password<input name="password" type="password" placeholder="Required for teacher" /></label><label>Student ID<input name="studentId" placeholder="Required for student" /></label><label>Class section<input name="classSection" required placeholder="e.g. SSS 1" /></label></div><div className="form-actions"><button type="button" className="secondary-button" onClick={() => setShowForm(false)}>Cancel</button><button className="primary-button" type="submit">Create login</button></div></form>}<div className="table-panel"><div className="table-head account-row"><span>Name</span><span>Role</span><span>Student ID</span><span>Class</span><span>Action</span></div>{accounts.map((account) => <div className="table-row account-row" key={account.id}><strong>{account.name}</strong><span><span className={`role-pill ${account.role.toLowerCase()}`}>{account.role}</span></span><span>{account.studentId || account.username}</span><span>{account.classSection || '-'}</span><button className="delete-button" onClick={() => deleteAccount(account)}>Delete</button></div>)}</div></>
+  const [role, setRole] = useState<'Teacher' | 'Student'>('Teacher')
+
+  return (
+    <>
+      <div className="section-heading">
+        <div><p className="eyebrow">Access management</p><h2>Teacher and student accounts</h2></div>
+        <button className="primary-button" onClick={() => setShowForm(!showForm)}>+ Create account</button>
+      </div>
+      <StudentCsvImport token={token} refresh={refresh} showNotice={showNotice} />
+      {showForm && (
+        <form className="form-panel" onSubmit={addAccount}>
+          <h3>Create login credentials</h3>
+          <div className="form-grid">
+            <label>Account type
+              <select name="role" value={role} onChange={(event) => setRole(event.target.value as 'Teacher' | 'Student')}>
+                <option>Teacher</option>
+                <option>Student</option>
+              </select>
+            </label>
+            <label>Full name<input name="name" required placeholder="Enter full name" /></label>
+            {role === 'Teacher' && (
+              <>
+                <label>Username<input name="username" required autoComplete="off" placeholder="Choose a username" /></label>
+                <label>Password<input name="password" type="password" required minLength={6} autoComplete="new-password" placeholder="At least 6 characters" /></label>
+              </>
+            )}
+            {role === 'Student' && (
+              <>
+                <label>Student ID<input name="studentId" required placeholder="e.g. STU-001" /></label>
+                <label>Class section<input name="classSection" required placeholder="e.g. SSS 1" /></label>
+              </>
+            )}
+          </div>
+          <div className="form-actions">
+            <button type="button" className="secondary-button" onClick={() => setShowForm(false)}>Cancel</button>
+            <button className="primary-button" type="submit">Create login</button>
+          </div>
+        </form>
+      )}
+      <div className="table-panel">
+        <div className="table-head account-row"><span>Name</span><span>Role</span><span>Student ID</span><span>Class</span><span>Action</span></div>
+        {accounts.map((account) => (
+          <div className="table-row account-row" key={account.id}>
+            <strong>{account.name}</strong>
+            <span><span className={`role-pill ${account.role.toLowerCase()}`}>{account.role}</span></span>
+            <span>{account.studentId || account.username}</span>
+            <span>{account.classSection || '-'}</span>
+            <button className="delete-button" onClick={() => deleteAccount(account)}>Delete</button>
+          </div>
+        ))}
+      </div>
+    </>
+  )
 }

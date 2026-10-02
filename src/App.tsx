@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
+import { Capacitor } from '@capacitor/core'
+import { NativeBiometric } from '@capgo/capacitor-native-biometric'
 import Approvals from './Approvals'
 import AdminRegistration from './AdminRegistration'
 import AccountsPanel from './AccountsPanel'
@@ -7,54 +9,168 @@ import ExamSchedule from './ExamSchedule'
 import PublicHome from './PublicHome'
 import SubjectQuestionWizard from './SubjectQuestionWizard'
 import TimedExamRunner from './TimedExamRunner'
+import { API_BASE } from './apiBase'
 import './App.css'
+import './mobile.css'
 
 type Role = 'Admin' | 'Teacher' | 'Student'
 type EntryPage = 'home' | 'login' | 'register'
-type Tab = 'Overview' | 'Accounts' | 'Schedule' | 'Approvals' | 'Questions' | 'My exams' | 'Results'
-type Account = { id: string; role: Role; name: string; username?: string; studentId?: string; classSection?: string }
-type Exam = { id: string; title: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number }
+type Tab = 'Overview' | 'Accounts' | 'Schedule' | 'Approvals' | 'Questions' | 'My exams' | 'Results' | 'Profile'
+type Account = { id: string; role: Role; name: string; username?: string; studentId?: string; classSection?: string; schoolName?: string; schoolSlug?: string }
+type Exam = { id: string; title: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number; taken?: number }
 type Question = { id: string; examId?: string; subject: string; text: string; options: string[]; answer?: number }
 type Result = { id: string; exam_title: string; student_name: string; student_id: string; score: number; total: number; submitted_at: string }
 type SubjectSetting = { subject: string; duration: number; approved: number; approved_at?: string }
-type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: Result[]; subjects: SubjectSetting[]; schoolName: string; schoolSlug: string }
-const emptyData: Data = { users: [], exams: [], questions: [], results: [], subjects: [], schoolName: '', schoolSlug: '' }
+type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: Result[]; subjects: SubjectSetting[] }
+type School = { name: string; slug: string }
 
-const reserved = ['api', 'assets', 'register', 'login', 'admin', 'www']; const rawSlug = (window.location.pathname.split('/').filter(Boolean)[0] || '').toLowerCase(); const schoolSlug = reserved.includes(rawSlug) ? '' : rawSlug; async function api<T>(path: string, token: string | null, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`https://cbt-exam-platform-production.up.railway.app/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) } })
-  if (!response.ok) { const error = await response.json().catch(() => ({ error: 'Request failed.' })); throw new Error(error.error || 'Request failed.') }
+const emptyData: Data = { users: [], exams: [], questions: [], results: [], subjects: [] }
+const TOKEN_KEY = 'timpriest-token'
+
+function readToken(): string | null {
+  try { return window.localStorage.getItem(TOKEN_KEY) } catch { return null }
+}
+
+function saveToken(value: string | null) {
+  try {
+    if (value) window.localStorage.setItem(TOKEN_KEY, value)
+    else window.localStorage.removeItem(TOKEN_KEY)
+  } catch { /* storage not available */ }
+}
+
+function readSchoolSlug(): string {
+  const first = window.location.pathname.split('/').filter(Boolean)[0] || ''
+  if (!first || first === 'api' || first === 'assets') return ''
+  try { return decodeURIComponent(first).toLowerCase() } catch { return '' }
+}
+
+function greeting() {
+  const hour = new Date().getHours()
+  return hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
+}
+
+async function api<T>(path: string, token: string | null, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${API_BASE}/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) } })
+  if (!response.ok) {
+    if (response.status === 401 && token) window.dispatchEvent(new Event('timpriest-expired'))
+    const error = await response.json().catch(() => ({ error: 'Request failed.' }))
+    throw new Error(error.error || 'Request failed.')
+  }
   return response.status === 204 ? undefined as T : response.json()
 }
 
 function App() {
+  const [schoolSlug] = useState(readSchoolSlug)
+  const [school, setSchool] = useState<School | null>(null)
+  const [schoolError, setSchoolError] = useState('')
   const [entryPage, setEntryPage] = useState<EntryPage>(schoolSlug ? 'login' : 'home')
   const [session, setSession] = useState<Account | null>(null)
   const [token, setToken] = useState<string | null>(null)
+  const [restoring, setRestoring] = useState(() => Boolean(readToken()))
   const [data, setData] = useState<Data>(emptyData)
   const [loginRole, setLoginRole] = useState<Role>('Admin')
   const [loginError, setLoginError] = useState('')
   const [tab, setTab] = useState<Tab>('Overview')
   const [notice, setNotice] = useState('')
+  const [menuOpen, setMenuOpen] = useState(false)
   const [showAccountForm, setShowAccountForm] = useState(false)
   const [showExamForm, setShowExamForm] = useState(false)
   const [activeExam, setActiveExam] = useState<Exam | null>(null)
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number>>({})
   const [submitted, setSubmitted] = useState(false)
-  const [loading, setLoading] = useState(false); const [schoolName, setSchoolName] = useState(''); const [schoolError, setSchoolError] = useState(''); useEffect(() => { if (!schoolSlug) return; api<{ name: string }>(`/school/${schoolSlug}`, null).then((school) => setSchoolName(school.name)).catch(() => setSchoolError('School not found. Please check your school link.')) }, [])
+  const [loading, setLoading] = useState(false)
+  const [biometricAvailable, setBiometricAvailable] = useState(false)
+  const [biometricSaved, setBiometricSaved] = useState(false)
+  const [enableBiometric, setEnableBiometric] = useState(false)
+  const [biometricLoading, setBiometricLoading] = useState(false)
+
+  const biometricServer = `timpriest-edu-${loginRole.toLowerCase()}`
+
+  useEffect(() => {
+    if (!schoolSlug) return
+    api<School>(`/schools/${encodeURIComponent(schoolSlug)}`, null)
+      .then(setSchool)
+      .catch(() => setSchoolError('This school link was not found. Check the address and try again.'))
+  }, [schoolSlug])
+
+  useEffect(() => {
+    const stored = readToken()
+    if (!stored) return
+    let active = true
+    void (async () => {
+      try {
+        const result = await api<{ user: Account }>('/me', stored)
+        const loaded = await api<Data>('/data', stored)
+        if (!active) return
+        setToken(stored); setSession(result.user); setData(loaded)
+      } catch { saveToken(null) } finally { if (active) setRestoring(false) }
+    })()
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    const expire = () => { saveToken(null); setToken(null); setSession(null); setData(emptyData); setActiveExam(null) }
+    window.addEventListener('timpriest-expired', expire)
+    return () => window.removeEventListener('timpriest-expired', expire)
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    async function checkBiometric() {
+      if (!Capacitor.isNativePlatform()) { setBiometricAvailable(false); setBiometricSaved(false); return }
+      try {
+        const availability = await NativeBiometric.isAvailable({ useFallback: false })
+        const saved = await NativeBiometric.isCredentialsSaved({ server: biometricServer })
+        if (active) { setBiometricAvailable(availability.isAvailable); setBiometricSaved(availability.isAvailable && saved.isSaved) }
+      } catch { if (active) { setBiometricAvailable(false); setBiometricSaved(false) } }
+    }
+    void checkBiometric()
+    return () => { active = false }
+  }, [biometricServer])
 
   const refresh = async (activeToken = token) => { if (!activeToken) return; setData(await api<Data>('/data', activeToken)) }
   const showNotice = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3000) }
+
+  function startSession(result: { token: string; user: Account }) {
+    saveToken(result.token)
+    setToken(result.token); setSession(result.user); setTab('Overview'); setMenuOpen(false)
+  }
 
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setLoading(true); setLoginError('')
     const values = new FormData(event.currentTarget)
     try {
-      const result = await api<{ token: string; user: Account }>('/login', null, { method: 'POST', body: JSON.stringify({ role: loginRole, identifier: String(values.get('identifier')).trim(), schoolSlug, password: String(values.get('password') || '') }) })
-      setToken(result.token); setSession(result.user); setTab('Overview'); await refresh(result.token)
+      const identifier = String(values.get('identifier')).trim()
+      const password = String(values.get('password') || '')
+      const result = await api<{ token: string; user: Account }>('/login', null, { method: 'POST', body: JSON.stringify({ role: loginRole, identifier, password, schoolSlug }) })
+      if (enableBiometric && biometricAvailable) {
+        try {
+          await NativeBiometric.verifyIdentity({ title: 'Enable fingerprint sign-in', reason: 'Confirm your identity to enable fingerprint sign-in.' })
+          await NativeBiometric.setCredentials({ username: identifier, password: password || 'student-id-login', server: biometricServer })
+          setBiometricSaved(true)
+        } catch { showNotice('Sign-in succeeded, but fingerprint setup was cancelled or failed.') }
+      }
+      startSession(result)
+      await refresh(result.token)
     } catch (error) { setLoginError(error instanceof Error ? error.message : 'Unable to sign in.') } finally { setLoading(false) }
   }
 
-  function logout() { setToken(null); setSession(null); setActiveExam(null); setSubmitted(false); setData(emptyData) }
+  async function loginWithBiometric() {
+    setBiometricLoading(true); setLoginError('')
+    try {
+      await NativeBiometric.verifyIdentity({ title: 'Sign in to TIMPRIEST EDU', reason: 'Verify your fingerprint to continue.' })
+      const credentials = await NativeBiometric.getCredentials({ server: biometricServer })
+      const result = await api<{ token: string; user: Account }>('/login', null, { method: 'POST', body: JSON.stringify({ role: loginRole, identifier: credentials.username, password: credentials.password, schoolSlug }) })
+      startSession(result)
+      await refresh(result.token)
+    } catch (error) { setLoginError(error instanceof Error ? error.message : 'Fingerprint sign-in failed. Use your regular sign-in details.') } finally { setBiometricLoading(false) }
+  }
+
+  function logout() {
+    if (token) void api('/logout', token, { method: 'POST' }).catch(() => undefined)
+    saveToken(null)
+    setToken(null); setSession(null); setActiveExam(null); setSubmitted(false); setData(emptyData); setMenuOpen(false); setEntryPage('login')
+  }
 
   async function addAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const values = new FormData(event.currentTarget); const role = String(values.get('role')) as Role
@@ -71,35 +187,227 @@ function App() {
 
   async function deleteSubject(subject: string) { if (!window.confirm(`Delete all questions for ${subject}? This cannot be undone.`)) return; try { await api(`/subjects/${encodeURIComponent(subject)}`, token, { method: 'DELETE' }); await refresh(); showNotice(`${subject} question set was deleted.`) } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not delete question set.') } }
 
-  async function submitExam(answers: Record<string, number>) { if (!activeExam) return; try { await api('/submissions', token, { method: 'POST', body: JSON.stringify({ examId: activeExam.id, answers }) }); setSubmitted(true); showNotice('Exam submitted successfully.') } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not submit exam.') } }
+  async function submitExam(answers: Record<string, number>) {
+    if (!activeExam) return
+    try {
+      await api('/submissions', token, { method: 'POST', body: JSON.stringify({ examId: activeExam.id, answers }) })
+      setSubmitted(true); showNotice('Exam submitted successfully.')
+      if (session?.role === 'Student') window.setTimeout(() => logout(), 4000)
+    } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not submit exam.') }
+  }
 
-  function renderLogin() { return <div className="login-page"><div className="login-art"><div className="brand light"><span className="brand-mark">T</span><span>TIMPRIEST EDU</span></div><div className="art-copy"><p className="eyebrow">Offline examination platform</p><h1>Every learner.<br /><em>One fair chance.</em></h1><p>Secure, simple computer-based testing for modern schools and training centres.</p></div><div className="art-footer"><span className="status-dot" /> LAN-ready · SQLite database</div></div><div className="login-panel"><div className="login-box"><button className="back-link" onClick={() => setEntryPage('home')}>← Public homepage</button><p className="eyebrow">Welcome back</p><h2>{schoolName || 'Sign in to your portal'}</h2>{(schoolError || !schoolSlug) && <p className="form-error">{schoolSlug ? schoolError : "Open your school's own sign-in link to continue."}</p>}<p className="login-subtitle">Choose your access type to continue.</p><div className="role-tabs">{(['Admin', 'Teacher', 'Student'] as Role[]).map((role) => <button className={loginRole === role ? 'selected' : ''} key={role} onClick={() => { setLoginRole(role); setLoginError('') }}>{role}</button>)}</div><form onSubmit={login}><label>{loginRole === 'Student' ? 'Student ID' : 'Username'}<input name="identifier" placeholder={loginRole === 'Student' ? 'e.g. STUDENT-001' : `Enter ${loginRole.toLowerCase()} username`} autoComplete="username" required /></label>{loginRole !== 'Student' && <label>Password<input name="password" type="password" placeholder="Enter password" autoComplete="current-password" required /></label>}{loginError && <p className="form-error">{loginError}</p>}<button className="primary-button full" type="submit" disabled={loading}>{loading ? 'Signing in...' : 'Continue'} <span>→</span></button></form></div><p className="copyright">TIMPRIEST EDU · SQLite LAN CBT Suite</p></div></div> }
+  function confirmSubmit() {
+    if (window.confirm('Submit your exam now? You cannot take it again after you submit.')) void submitExam(selectedAnswers)
+  }
 
+  function renderLogin() {
+    return (
+      <div className="login-page">
+        <div className="login-art">
+          <div className="brand light"><span className="brand-mark">T</span><span>TIMPRIEST EDU</span></div>
+          <div className="art-copy">
+            <p className="eyebrow">Examination platform</p>
+            <h1>Every learner.<br /><em>One fair chance.</em></h1>
+            <p>Secure, simple computer-based testing for modern schools and training centres.</p>
+          </div>
+          <div className="art-footer"><span className="status-dot" /> Secure · Separate data for every school</div>
+        </div>
+        <div className="login-panel">
+          <div className="login-box">
+            <p className="eyebrow">{school ? school.name : 'Welcome back'}</p>
+            <h2>Sign in to your portal</h2>
+            {schoolError ? <p className="form-error">{schoolError}</p> : <>
+              <p className="login-subtitle">Choose your access type to continue.</p>
+              <div className="role-tabs">
+                {(['Admin', 'Teacher', 'Student'] as Role[]).map((role) => <button type="button" className={loginRole === role ? 'selected' : ''} key={role} onClick={() => { setLoginRole(role); setLoginError('') }}>{role}</button>)}
+              </div>
+              <form onSubmit={login}>
+                <label>{loginRole === 'Student' ? 'Student ID' : 'Username'}<input name="identifier" placeholder={loginRole === 'Student' ? 'e.g. STUDENT-001' : `Enter ${loginRole.toLowerCase()} username`} autoComplete="username" required /></label>
+                {loginRole !== 'Student' && <label>Password<input name="password" type="password" placeholder="Enter password" autoComplete="current-password" required /></label>}
+                {loginRole === 'Student' && !schoolSlug && <p className="login-hint">Students: open your school's own sign-in link to continue.</p>}
+                {biometricAvailable && !biometricSaved && <label className="biometric-opt-in"><input type="checkbox" checked={enableBiometric} onChange={(event) => setEnableBiometric(event.target.checked)} />Enable fingerprint sign-in on this device</label>}
+                {loginError && <p className="form-error">{loginError}</p>}
+                <button className="primary-button full" type="submit" disabled={loading}>{loading ? 'Signing in...' : 'Continue'} <span>→</span></button>
+              </form>
+              {biometricAvailable && biometricSaved && <button className="biometric-button" type="button" onClick={loginWithBiometric} disabled={biometricLoading}><span aria-hidden="true">◉</span>{biometricLoading ? 'Waiting for fingerprint...' : 'Sign in with fingerprint'}</button>}
+            </>}
+          </div>
+          <p className="copyright">TIMPRIEST EDU · CBT Suite</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (restoring) return <div className="login-page"><div className="login-panel"><div className="login-box"><p className="login-subtitle">Loading...</p></div></div></div>
   if (!session && entryPage === 'home') return <PublicHome onSignIn={() => setEntryPage('login')} onRegister={() => setEntryPage('register')} />
-  if (!session && entryPage === 'register') return <AdminRegistration onBack={() => setEntryPage('home')} onComplete={() => setEntryPage('login')} />
+  if (!session && entryPage === 'register') return <AdminRegistration onBack={() => setEntryPage('home')} onComplete={(slug) => { if (Capacitor.isNativePlatform()) setEntryPage('login'); else window.location.assign(`/${slug}`) }} />
   if (!session) return renderLogin()
-  const isAdmin = session.role === 'Admin'; const isTeacher = session.role === 'Teacher'
-  const navItems: Tab[] = isAdmin ? ['Overview', 'Accounts', 'Schedule', 'Approvals', 'Results'] : isTeacher ? ['Overview', 'Questions', 'My exams'] : ['Overview', 'My exams']
-  const examQuestions = activeExam ? data.questions.filter((question) => question.examId === activeExam.id || (!question.examId && question.subject === activeExam.subject)) : []
 
-  return <div className="app-shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">T</span><span>TIMPRIEST EDU</span></div><div className="centre-switcher"><span className="status-dot" /><span><strong>{data.schoolName}</strong><small>SQLite LAN mode</small></span></div><p className="nav-label">{session.role} portal</p><nav>{navItems.map((item) => <button className={tab === item ? 'nav-item active' : 'nav-item'} key={item} onClick={() => setTab(item)}><span className="nav-icon">{item === 'Overview' ? '◈' : item === 'Accounts' ? '♙' : item === 'Schedule' || item === 'My exams' ? '▣' : item === 'Questions' ? '✦' : '▥'}</span>{item}</button>)}</nav><div className="sidebar-bottom">{session.role !== 'Student' && <button className="nav-item" onClick={logout}><span className="nav-icon">↪</span>Sign out</button>}<div className="user-chip"><span className="avatar">{session.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span><strong>{session.name}</strong><small>{session.role}</small></span></div></div></aside><main className="main-content"><header className="topbar"><div className="breadcrumb">{tab} <span>/</span> {session.role}</div><div className="top-actions"><span className="online-label"><span className="status-dot" /> LAN database connected</span><button className="role-button"><span className="avatar small">{session.name.slice(0, 2).toUpperCase()}</span>{session.role}<span>↪</span></button></div></header><section className={tab === 'Results' ? 'content-wrap results-print-scope' : 'content-wrap'}>{notice && <div className="toast">✓ {notice}</div>}{activeExam ? <TimedExamRunner exam={activeExam} questions={examQuestions} selectedAnswers={selectedAnswers} setSelectedAnswers={setSelectedAnswers} submitted={submitted} submit={() => submitExam(selectedAnswers)} exit={() => { setActiveExam(null); setSubmitted(false); setSelectedAnswers({}) }} /> : <>{<div className="intro"><div><p className="eyebrow">{isAdmin ? 'Administrator console' : isTeacher ? 'Teacher workspace' : 'Student portal'}</p><h1>{isAdmin ? `Good morning, ${session.name.split(' ')[0]}.` : `Welcome back, ${session.name.split(' ')[0]}.`}</h1><p className="intro-copy">{isAdmin ? 'Manage your people, exams, schedules, and published results. Your school sign-in link: ' + window.location.origin + '/' + data.schoolSlug : isTeacher ? 'Prepare subject questions one step at a time.' : 'Your exam schedule is ready when you are.'}</p></div>{isAdmin && <button className="primary-button" onClick={() => { setTab('Schedule'); setShowExamForm(true) }}>+ Create exam</button>}{isTeacher && <button className="primary-button" onClick={() => setTab('Questions')}>+ Set questions</button>}{!isAdmin && !isTeacher && <button className="primary-button" onClick={() => { setTab('My exams'); setActiveExam(data.exams.find((exam) => exam.status === 'Scheduled') || null) }}>Enter exam →</button>}</div>}{tab === 'Overview' && <Overview session={session} data={data} setTab={setTab} setActiveExam={setActiveExam} />}{tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}{tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}{tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} />}{tab === 'My exams' && <ExamList exams={data.exams} student={session.role === 'Student'} start={(exam) => { setActiveExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}{tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} approve={approveSubject} deleteSubject={deleteSubject} />}{tab === 'Results' && isAdmin && <Results results={data.results} />}</>}</section></main></div>
+  const isAdmin = session.role === 'Admin'
+  const isTeacher = session.role === 'Teacher'
+  const isStudent = session.role === 'Student'
+  const centre = session.schoolName || 'Your school'
+  const firstName = session.name.split(' ')[0]
+  const linkBase = API_BASE || window.location.origin
+  const navItems: Tab[] = isAdmin ? ['Overview', 'Accounts', 'Schedule', 'Approvals', 'Results', 'Profile'] : isTeacher ? ['Overview', 'Questions', 'My exams', 'Profile'] : ['Overview', 'My exams']
+  const examQuestions = activeExam ? data.questions.filter((question) => question.examId === activeExam.id || (!question.examId && question.subject === activeExam.subject)) : []
+  const navIcon = (item: Tab) => item === 'Overview' ? '◈' : item === 'Accounts' ? '♙' : item === 'Schedule' || item === 'My exams' ? '▣' : item === 'Questions' ? '✦' : item === 'Profile' ? '☺' : '▥'
+
+  return (
+    <div className={menuOpen ? 'app-shell menu-open' : 'app-shell'}>
+      <aside className="sidebar">
+        <div className="brand"><span className="brand-mark">T</span><span>TIMPRIEST EDU</span></div>
+        <div className="centre-switcher"><span className="status-dot" /><span><strong>{centre}</strong><small>{session.role} portal</small></span></div>
+        <p className="nav-label">{session.role} portal</p>
+        <nav>
+          {navItems.map((item) => <button className={tab === item ? 'nav-item active' : 'nav-item'} key={item} onClick={() => { setTab(item); setMenuOpen(false) }}><span className="nav-icon">{navIcon(item)}</span>{item}</button>)}
+        </nav>
+        <div className="sidebar-bottom">
+          {!isStudent && <button className="nav-item" onClick={logout}><span className="nav-icon">↪</span>Sign out</button>}
+          <div className="user-chip"><span className="avatar">{session.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span><strong>{session.name}</strong><small>{session.role}</small></span></div>
+        </div>
+      </aside>
+      <main className="main-content">
+        <header className="topbar">
+          <button className="menu-button" type="button" aria-label="Open or close the menu" onClick={() => setMenuOpen((open) => !open)}>☰</button>
+          <div className="breadcrumb">{tab} <span>/</span> {session.role}</div>
+          <div className="top-actions"><span className="online-label"><span className="status-dot" /> Connected</span></div>
+        </header>
+        <section className={tab === 'Results' ? 'content-wrap results-print-scope' : 'content-wrap'}>
+          {notice && <div className="toast">✓ {notice}</div>}
+          {activeExam
+            ? <TimedExamRunner exam={activeExam} questions={examQuestions} selectedAnswers={selectedAnswers} setSelectedAnswers={setSelectedAnswers} submitted={submitted} submit={confirmSubmit} exit={() => { setActiveExam(null); setSubmitted(false); setSelectedAnswers({}) }} />
+            : <>
+              <div className="intro">
+                <div>
+                  <p className="eyebrow">{isAdmin ? 'Administrator console' : isTeacher ? 'Teacher workspace' : 'Student portal'}</p>
+                  <h1>{isAdmin ? `${greeting()}, ${firstName}.` : `Welcome back, ${firstName}.`}</h1>
+                  <p className="intro-copy">{isAdmin ? 'Manage your people, exams, schedules, and published results.' : isTeacher ? 'Prepare subject questions one step at a time.' : 'Your exam schedule is ready when you are.'}</p>
+                  {isAdmin && session.schoolSlug && <p className="intro-copy share-link">Your school's sign-in link: <strong>{linkBase}/{session.schoolSlug}</strong></p>}
+                </div>
+                {isAdmin && <button className="primary-button" onClick={() => { setTab('Schedule'); setShowExamForm(true) }}>+ Create exam</button>}
+                {isTeacher && <button className="primary-button" onClick={() => setTab('Questions')}>+ Set questions</button>}
+                {isStudent && <button className="primary-button" onClick={() => { const next = data.exams.find((exam) => exam.status === 'Scheduled' && !exam.taken); setTab('My exams'); if (next) setActiveExam(next); else showNotice('No exam is available to start right now.') }}>Enter exam →</button>}
+              </div>
+              {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={setActiveExam} />}
+              {tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
+              {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
+              {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} />}
+              {tab === 'My exams' && <ExamList exams={data.exams} student={isStudent} centre={centre} start={(exam) => { setActiveExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}
+              {tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} approve={approveSubject} deleteSubject={deleteSubject} />}
+              {tab === 'Results' && isAdmin && <Results results={data.results} />}
+              {tab === 'Profile' && !isStudent && <Profile session={session} token={token} showNotice={showNotice} />}
+            </>}
+        </section>
+      </main>
+      <div className="sidebar-backdrop" onClick={() => setMenuOpen(false)} />
+    </div>
+  )
 }
 
-function Overview({ session, data, setTab, setActiveExam }: { session: Account; data: Data; setTab: (tab: Tab) => void; setActiveExam: (exam: Exam) => void }) { const stats = session.role === 'Admin' ? [[String(data.exams.length).padStart(2, '0'), 'Scheduled exams', 'SQLite records'], [String(data.users.filter((item) => item.role === 'Student').length).padStart(2, '0'), 'Students', 'Active accounts'], [String(data.users.filter((item) => item.role === 'Teacher').length).padStart(2, '0'), 'Teachers', 'Active accounts']] : session.role === 'Teacher' ? [[String(data.exams.length).padStart(2, '0'), 'Assessments', 'Centre schedule'], [String(data.questions.length).padStart(2, '0'), 'Questions saved', 'Question bank'], ['01', 'Next session', 'On schedule']] : [['02', 'Upcoming exams', 'Next scheduled'], ['01', 'Exam access', 'Ready to start'], ['--', 'Results', 'Managed by Admin']]; return <><div className="stats-grid">{stats.map(([value, label, note]) => <article className="stat-card" key={label}><span className="stat-value">{value}</span><span className="stat-label">{label}</span><span className="stat-note">{note}</span></article>)}</div><div className="section-heading"><div><p className="eyebrow">At a glance</p><h2>{session.role === 'Admin' ? 'Centre activity' : 'Upcoming sessions'}</h2></div><button className="text-button" onClick={() => setTab(session.role === 'Admin' ? 'Schedule' : 'My exams')}>View details <span>→</span></button></div><div className="dashboard-grid"><section className="panel"><div className="panel-header"><div><h3>Exam schedule</h3><p>Published sessions from the LAN database.</p></div></div>{data.exams.map((exam) => <div className="session" key={exam.id}><div className="date-block"><strong>{new Date(`${exam.date}T00:00:00`).getDate()}</strong><span>{new Date(`${exam.date}T00:00:00`).toLocaleString('en', { month: 'short' }).toUpperCase()}</span></div><div className="session-info"><div className="session-title">{exam.title} <span className={`tag ${exam.status === 'Scheduled' ? 'live' : 'draft'}`}>{exam.status}</span></div><p>{exam.time} · {exam.duration} minutes · {exam.questions} questions</p><small>{exam.subject} · {data.schoolName}</small></div>{session.role === 'Student' && exam.status === 'Scheduled' && <button className="start-link" onClick={() => setActiveExam(exam)}>Start →</button>}</div>)}</section><section className="panel"><div className="panel-header"><div><h3>Quick actions</h3><p>Common tasks for your portal.</p></div></div><div className="quick-actions">{session.role === 'Admin' && <><button onClick={() => setTab('Accounts')}>♙ <span>Manage accounts<small>Create or delete teachers and students</small></span>→</button><button onClick={() => setTab('Results')}>▥ <span>View exam results<small>Print result sheets as PDF</small></span>→</button></>}{session.role === 'Teacher' && <button onClick={() => setTab('Questions')}>✦ <span>Set subject questions<small>Use Next, Previous, and Submit</small></span>→</button>}{session.role === 'Student' && <button onClick={() => setActiveExam(data.exams.find((exam) => exam.status === 'Scheduled') || data.exams[0])}>▣ <span>Start next exam<small>Results are handled by the Admin</small></span>→</button>}</div></section></div></> }
+function Profile({ session, token, showNotice }: { session: Account; token: string | null; showNotice: (message: string) => void }) {
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
 
-function ExamList({ exams, student, start }: { exams: Exam[]; student: boolean; start: (exam: Exam) => void }) { return <><div className="section-heading"><div><p className="eyebrow">Examination schedule</p><h2>{student ? 'Your exams' : 'Assigned examinations'}</h2></div></div><div className="exam-cards">{exams.map((exam) => <article className="exam-card" key={exam.id}><div className="exam-card-date"><strong>{new Date(`${exam.date}T00:00:00`).getDate()}</strong><span>{new Date(`${exam.date}T00:00:00`).toLocaleString('en', { month: 'short' }).toUpperCase()}</span></div><div><h3>{exam.title}</h3><p>{exam.subject} · {exam.time} · {exam.duration} minutes</p><small>{exam.questions} questions</small></div>{student && exam.status === 'Scheduled' && <button className="primary-button small-button" onClick={() => start(exam)}>Start exam</button>}</article>)}</div></> }
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const values = new FormData(form)
+    const currentPassword = String(values.get('currentPassword') || '')
+    const newPassword = String(values.get('newPassword') || '')
+    if (newPassword !== String(values.get('confirmPassword') || '')) { setError('The new passwords do not match.'); return }
+    setBusy(true); setError('')
+    try {
+      await api('/change-password', token, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) })
+      form.reset()
+      showNotice('Password changed.')
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not change the password.') } finally { setBusy(false) }
+  }
 
-function Results({ results }: { results: Result[] }) { return <><div className="section-heading"><div><p className="eyebrow">Administrator reports</p><h2>Exam results</h2></div><button className="primary-button" onClick={() => window.print()}>Print / Save PDF</button></div><div className="table-panel results-table"><div className="table-head"><span>Student</span><span>Exam</span><span>Score</span><span>Submitted</span></div>{results.length ? results.map((result) => <div className="table-row" key={result.id}><strong>{result.student_name}<small>{result.student_id}</small></strong><span>{result.exam_title}</span><span className="score-text">{result.score} / {result.total}</span><span>{new Date(result.submitted_at).toLocaleString()}</span></div>) : <div className="result-empty"><span>▥</span><h3>No submitted results yet</h3><p>Student submissions will appear here for review and printing.</p></div>}</div></> }
+  return (
+    <>
+      <div className="section-heading"><div><p className="eyebrow">Your account</p><h2>Profile</h2></div></div>
+      <div className="profile-panel">
+        <div className="profile-details">
+          <strong>{session.name}</strong>
+          <span>{session.role} · {session.username}</span>
+          <span>{session.schoolName}</span>
+        </div>
+        <h3>Change password</h3>
+        <p>Use at least 6 characters.</p>
+        <form className="profile-form" onSubmit={submit}>
+          <label>Current password<input name="currentPassword" type="password" autoComplete="current-password" required /></label>
+          <label>New password<input name="newPassword" type="password" minLength={6} autoComplete="new-password" required /></label>
+          <label>Confirm new password<input name="confirmPassword" type="password" minLength={6} autoComplete="new-password" required /></label>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Saving...' : 'Change password'}</button>
+        </form>
+      </div>
+    </>
+  )
+}
+
+function Overview({ session, data, centre, setTab, setActiveExam }: { session: Account; data: Data; centre: string; setTab: (tab: Tab) => void; setActiveExam: (exam: Exam) => void }) {
+  const pad = (count: number) => String(count).padStart(2, '0')
+  const open = data.exams.filter((exam) => exam.status === 'Scheduled' && !exam.taken)
+  const stats = session.role === 'Admin'
+    ? [[pad(data.exams.length), 'Scheduled exams', 'Your school'], [pad(data.users.filter((item) => item.role === 'Student').length), 'Students', 'Active accounts'], [pad(data.users.filter((item) => item.role === 'Teacher').length), 'Teachers', 'Active accounts']]
+    : session.role === 'Teacher'
+      ? [[pad(data.exams.length), 'Assessments', 'School schedule'], [pad(data.questions.length), 'Questions saved', 'Question bank'], [pad(data.subjects.length), 'Subjects', 'Your school']]
+      : [[pad(open.length), 'Upcoming exams', 'Ready to take'], [pad(data.exams.filter((exam) => exam.taken).length), 'Submitted', 'Completed exams'], ['--', 'Results', 'Managed by Admin']]
+  return (
+    <>
+      <div className="stats-grid">{stats.map(([value, label, note]) => <article className="stat-card" key={label}><span className="stat-value">{value}</span><span className="stat-label">{label}</span><span className="stat-note">{note}</span></article>)}</div>
+      <div className="section-heading"><div><p className="eyebrow">At a glance</p><h2>{session.role === 'Admin' ? 'School activity' : 'Upcoming sessions'}</h2></div><button className="text-button" onClick={() => setTab(session.role === 'Admin' ? 'Schedule' : 'My exams')}>View details <span>→</span></button></div>
+      <div className="dashboard-grid">
+        <section className="panel">
+          <div className="panel-header"><div><h3>Exam schedule</h3><p>Published sessions for your school.</p></div></div>
+          {data.exams.map((exam) => <div className="session" key={exam.id}>
+            <div className="date-block"><strong>{new Date(`${exam.date}T00:00:00`).getDate()}</strong><span>{new Date(`${exam.date}T00:00:00`).toLocaleString('en', { month: 'short' }).toUpperCase()}</span></div>
+            <div className="session-info"><div className="session-title">{exam.title} <span className={`tag ${exam.status === 'Scheduled' ? 'live' : 'draft'}`}>{exam.taken && session.role === 'Student' ? 'Submitted' : exam.status}</span></div><p>{exam.time} · {exam.duration} minutes · {exam.questions} questions</p><small>{exam.subject} · {centre}</small></div>
+            {session.role === 'Student' && exam.status === 'Scheduled' && !exam.taken && <button className="start-link" onClick={() => setActiveExam(exam)}>Start →</button>}
+          </div>)}
+        </section>
+        <section className="panel">
+          <div className="panel-header"><div><h3>Quick actions</h3><p>Common tasks for your portal.</p></div></div>
+          <div className="quick-actions">
+            {session.role === 'Admin' && <><button onClick={() => setTab('Accounts')}>♙ <span>Manage accounts<small>Create or delete teachers and students</small></span>→</button><button onClick={() => setTab('Results')}>▥ <span>View exam results<small>Print result sheets as PDF</small></span>→</button></>}
+            {session.role === 'Teacher' && <button onClick={() => setTab('Questions')}>✦ <span>Set subject questions<small>Use Next, Previous, and Submit</small></span>→</button>}
+            {session.role === 'Student' && <button onClick={() => { if (open[0]) setActiveExam(open[0]) }}>▣ <span>Start next exam<small>Results are handled by the Admin</small></span>→</button>}
+          </div>
+        </section>
+      </div>
+    </>
+  )
+}
+
+function ExamList({ exams, student, centre, start }: { exams: Exam[]; student: boolean; centre: string; start: (exam: Exam) => void }) {
+  return (
+    <>
+      <div className="section-heading"><div><p className="eyebrow">Examination schedule</p><h2>{student ? 'Your exams' : 'Assigned examinations'}</h2></div></div>
+      <div className="exam-cards">
+        {exams.map((exam) => <article className="exam-card" key={exam.id}>
+          <div className="exam-card-date"><strong>{new Date(`${exam.date}T00:00:00`).getDate()}</strong><span>{new Date(`${exam.date}T00:00:00`).toLocaleString('en', { month: 'short' }).toUpperCase()}</span></div>
+          <div><h3>{exam.title}</h3><p>{exam.subject} · {exam.time} · {exam.duration} minutes</p><small>{exam.questions} questions · {centre}</small></div>
+          {student && exam.taken ? <span className="tag draft">Submitted</span> : student && exam.status === 'Scheduled' && <button className="primary-button small-button" onClick={() => start(exam)}>Start exam</button>}
+        </article>)}
+      </div>
+    </>
+  )
+}
+
+function Results({ results }: { results: Result[] }) {
+  return (
+    <>
+      <div className="section-heading"><div><p className="eyebrow">Administrator reports</p><h2>Exam results</h2></div><button className="primary-button" onClick={() => window.print()}>Print / Save PDF</button></div>
+      <div className="table-panel results-table">
+        <div className="table-head"><span>Student</span><span>Exam</span><span>Score</span><span>Submitted</span></div>
+        {results.length
+          ? results.map((result) => <div className="table-row" key={result.id}><strong>{result.student_name}<small>{result.student_id}</small></strong><span>{result.exam_title}</span><span className="score-text">{result.score} / {result.total}</span><span>{new Date(result.submitted_at).toLocaleString()}</span></div>)
+          : <div className="result-empty"><span>▥</span><h3>No submitted results yet</h3><p>Student submissions will appear here for review and printing.</p></div>}
+      </div>
+    </>
+  )
+}
 
 export default App
-
-
-
-
-
-
-
-
-
-
-
