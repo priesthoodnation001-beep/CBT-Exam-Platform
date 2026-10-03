@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Connect to the school server</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background: #f4f1e6; color: #1d4d2b; margin: 0; min-height: 100vh; display: grid; place-items: center; }
+    main { background: #fff; border: 1px solid #d9c27a; border-radius: 14px; padding: 32px; width: min(520px, 92vw); }
+    h1 { margin: 0 0 8px; font-size: 1.4rem; }
+    p { line-height: 1.5; }
+    input { width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; border: 1px solid #9bb59f; border-radius: 8px; margin: 8px 0 14px; }
+    button { background: #1d4d2b; color: #fff; border: 0; border-radius: 8px; padding: 12px 20px; font-size: 1rem; cursor: pointer; }
+    .error { color: #a12626; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Connect to the school server</h1>
+    <p>Type the address your teacher or school admin gave you. It looks like <strong>http://192.168.1.10:8787/your-school-name</strong>.</p>
+    <p id="message" class="error"></p>
+    <form id="form">
+      <input id="address" placeholder="http://192.168.1.10:8787/your-school-name" autofocus />
+      <button type="submit">Connect</button>
+    </form>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search)
+    document.getElementById('message').textContent = params.get('message') || ''
+    document.getElementById('address').value = params.get('address') || ''
+    document.getElementById('form').addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const result = await window.tp.saveServer(document.getElementById('address').value)
+      if (!result.ok) document.getElementById('message').textContent = result.error
+    })
+  </script>
+</body>
+</html>

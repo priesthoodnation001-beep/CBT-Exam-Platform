@@ -2,12 +2,16 @@
   "name": "cbt-exam-software",
   "private": true,
   "version": "0.0.0",
+  "description": "TIMPRIEST EDU offline exam system",
+  "author": "TIMPRIEST EDU",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "server": "node server/index.cjs",
     "dev:full": "npm run server",
     "build": "tsc -b && vite build",
+    "desktop": "electron .",
     "desktop:build": "npm run build && electron-builder --win --x64",
     "android:sync": "npm run build && cap sync android",
     "android:open": "cap open android",
@@ -37,10 +41,17 @@
   },
   "build": {
     "appId": "edu.timpriest.cbt",
-    "productName": "TIMPRIEST EDU CBT",
+    "productName": "TIMPRIEST EDU",
+    "asar": false,
     "directories": { "output": "release" },
-    "files": ["dist/**/*", "server/**/*", "electron/**/*", "package.json", "node_modules/**/*"],
+    "files": ["dist/**/*", "server/**/*", "electron/**/*", "package.json"],
     "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true }
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "include": "build/installer.nsh"
+    }
   }
 }
