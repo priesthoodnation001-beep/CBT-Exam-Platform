@@ -5,7 +5,7 @@ import { API_BASE } from './apiBase'
 type Exam = { id: string; subject: string }
 type Question = { id: string; subject: string; text: string; options: string[]; answer?: number }
 type DraftQuestion = { subject: string; text: string; options: string[]; answer: number; examId?: string }
-type Props = { questions: Question[]; exams: Exam[]; token: string | null; refresh: () => Promise<void>; showNotice: (message: string) => void }
+type Props = { questions: Question[]; exams: Exam[]; token: string | null; refresh: () => Promise<void>; showNotice: (message: string) => void; aiReady?: boolean; aiRemaining?: number }
 
 const emptyForm = { text: '', options: ['', '', '', ''], answer: 0 }
 
@@ -14,12 +14,18 @@ async function saveQuestion(token: string | null, question: DraftQuestion) {
   if (!response.ok) { const error = await response.json().catch(() => ({ error: 'Could not save question.' })); throw new Error(error.error) }
 }
 
-export default function SubjectQuestionWizard({ questions, exams, token, refresh, showNotice }: Props) {
+export default function SubjectQuestionWizard({ questions, exams, token, refresh, showNotice, aiReady, aiRemaining }: Props) {
   const [subject, setSubject] = useState('')
   const [duration, setDuration] = useState(30)
   const [draft, setDraft] = useState<DraftQuestion[]>([])
   const [step, setStep] = useState(0)
   const [form, setForm] = useState(emptyForm)
+  const [aiTopic, setAiTopic] = useState('')
+  const [aiLevel, setAiLevel] = useState('')
+  const [aiCount, setAiCount] = useState(5)
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiLeft, setAiLeft] = useState<number | null>(null)
+  const remaining = aiLeft ?? aiRemaining ?? 0
   const subjectName = subject.trim()
   const knownSubjects = Array.from(new Set([...exams.map((exam) => exam.subject), ...questions.map((question) => question.subject)]))
   const examFor = (name: string) => exams.find((exam) => exam.subject.toLowerCase() === name.toLowerCase())?.id
@@ -32,6 +38,28 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
   const saveDraft = () => { const question = makeQuestion(); if (!question) return false; setDraft(draft.length > step ? draft.map((item, index) => index === step ? question : item) : [...draft, question]); return true }
   const nextStep = () => { if (!saveDraft()) return; const nextIndex = step + 1; setStep(nextIndex); const item = draft[nextIndex]; setForm(item ? { text: item.text, options: item.options, answer: item.answer } : emptyForm) }
   const previousStep = () => { if (step === 0) return; const previous = draft[step - 1]; setStep(step - 1); setForm({ text: previous.text, options: previous.options, answer: previous.answer }) }
+
+  const generateWithAi = async () => {
+    if (!subjectName || !aiTopic.trim()) { showNotice('Enter the subject name and a topic for the AI first.'); return }
+    // keep whatever the teacher is currently typing
+    let base = draft
+    if (form.text.trim()) {
+      const current = makeQuestion(); if (!current) return
+      base = draft.length > step ? draft.map((item, index) => index === step ? current : item) : [...draft, current]
+    }
+    setAiBusy(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/ai/questions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ subject: subjectName, topic: aiTopic.trim(), level: aiLevel.trim(), count: aiCount }) })
+      const body = await response.json().catch(() => ({ error: 'Could not generate questions.' }))
+      if (!response.ok) { showNotice(body.error || 'Could not generate questions.'); return }
+      const generated: DraftQuestion[] = body.questions.map((item: { text: string; options: string[]; answer: number }) => ({ subject: subjectName, text: item.text, options: item.options, answer: item.answer, examId: examFor(subjectName) }))
+      const merged = [...base, ...generated]
+      const first = merged[base.length]
+      setDraft(merged); setStep(base.length); setForm({ text: first.text, options: first.options, answer: first.answer })
+      if (typeof body.remaining === 'number') setAiLeft(body.remaining)
+      showNotice(`${generated.length} AI questions added. Use Next to read and check each one before you submit.`)
+    } catch { showNotice('Could not reach the AI helper. Check your connection.') } finally { setAiBusy(false) }
+  }
 
   const submitSubject = async () => {
     const current = makeQuestion(); if (!current) return
@@ -60,6 +88,18 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
           </label>
           <datalist id="known-subjects">{knownSubjects.map((item) => <option key={item} value={item} />)}</datalist>
           <label>Time for this subject (maximum 30 minutes)<input type="number" min="1" max="30" value={duration} onChange={(event) => setDuration(Math.min(30, Math.max(1, Number(event.target.value))))} /></label>
+          {aiReady && (
+            <div className="ai-box">
+              <strong>✦ Write questions with AI</strong>
+              <p>Enter the subject name above, then a topic. The AI writes draft questions for you to check and edit. Always read every question and its answer before you submit. {remaining} AI requests left today.</p>
+              <label>Topic<input value={aiTopic} onChange={(event) => setAiTopic(event.target.value)} placeholder="e.g. Fractions and decimals" /></label>
+              <div className="ai-row">
+                <label>Class level<input value={aiLevel} onChange={(event) => setAiLevel(event.target.value)} placeholder="e.g. JSS 2" /></label>
+                <label>How many (1 to 10)<input type="number" min="1" max="10" value={aiCount} onChange={(event) => setAiCount(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label>
+              </div>
+              <button className="secondary-button" type="button" onClick={() => void generateWithAi()} disabled={aiBusy || remaining <= 0}>{aiBusy ? 'Writing questions...' : remaining <= 0 ? 'No AI requests left today' : 'Generate with AI'}</button>
+            </div>
+          )}
           <label>Question text<textarea value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} placeholder="Write the question here..." /></label>
           <div className="option-grid">
             {form.options.map((option, index) => <label key={index}>Option {String.fromCharCode(65 + index)}<input value={option} onChange={(event) => updateOption(index, event.target.value)} /></label>)}

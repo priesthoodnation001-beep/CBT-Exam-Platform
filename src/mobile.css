@@ -82,3 +82,9 @@
 @media print {
   .menu-button, .sidebar-backdrop { display: none !important; }
 }
+
+/* AI question helper */
+.ai-box { border: 1px solid #d9c27a; background: #fbf6e4; border-radius: 12px; padding: 14px; margin-bottom: 16px; display: grid; gap: 10px; }
+.ai-box p { margin: 0; font-size: 0.9rem; opacity: 0.85; }
+.ai-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 520px) { .ai-row { grid-template-columns: 1fr; } }

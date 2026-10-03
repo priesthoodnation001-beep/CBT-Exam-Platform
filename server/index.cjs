@@ -1,6 +1,7 @@
 const express = require('express')
 const fs = require('fs')
 const os = require('os')
+const createSync = require('./sync.cjs')
 const path = require('path')
 const crypto = require('crypto')
 const initSqlJs = require('sql.js')
@@ -11,7 +12,13 @@ const DB_FILE = path.join(DATA_DIR, 'timpriest-v2.sqlite')
 const CLIENT_DIR = path.join(__dirname, '..', 'dist')
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000
 const RESERVED_SLUGS = new Set(['api', 'assets', 'admin', 'login', 'register', 'static', 'favicon.ico'])
-const OFFLINE = ['1', 'true', 'yes'].includes(String(process.env.OFFLINE_MODE || '').toLowerCase()) // school-LAN mode: no credits, no payments, no AI
+const OFFLINE = ['1', 'true', 'yes'].includes(String(process.env.OFFLINE_MODE || '').toLowerCase()) // school-LAN mode: runs on the school's own computer; credits are bought online and entered as signed vouchers
+const ONLINE_URL = (process.env.ONLINE_URL || 'https://timpriestedu.up.railway.app').replace(/\/$/, '')
+const VOUCHER_PRIVATE = String(process.env.VOUCHER_PRIVATE_KEY || '').trim() // online server only (Railway variable)
+const VOUCHER_PUBLIC = (() => {
+  if (process.env.VOUCHER_PUBLIC_KEY) return String(process.env.VOUCHER_PUBLIC_KEY).trim()
+  try { return fs.readFileSync(path.join(__dirname, 'voucher-public.txt'), 'utf8').trim() } catch { return '' }
+})()
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY || ''
 const STARTER_CREDITS = Number(process.env.STARTER_CREDITS || 10)
 const CREDIT_PRICE_KOBO = Number(process.env.CREDIT_PRICE_KOBO || 5000) // 5000 kobo = N50 per credit
@@ -24,8 +31,10 @@ const AI_SCHOOL_DAILY_LIMIT = Number(process.env.AI_SCHOOL_DAILY_LIMIT || 100) /
 const app = express()
 const attempts = new Map()
 let db
+let sync
 
 app.set('trust proxy', 1)
+app.use('/api/sync', express.json({ limit: '25mb' }))
 app.use(express.json({ limit: '1mb', verify: (request, _response, buffer) => { request.rawBody = buffer } }))
 app.use((request, response, next) => {
   response.setHeader('Access-Control-Allow-Origin', '*')
@@ -128,7 +137,7 @@ function fulfilPayment(reference, paidAmountKobo) {
   if (payment.status === 'success') return { ok: true, already: true, credits: payment.credits }
   if (Number(paidAmountKobo) < Number(payment.amount_kobo)) return { ok: false, error: 'Amount paid does not match.' }
   run('UPDATE payments SET status = \'success\', paid_at = ? WHERE reference = ?', [new Date().toISOString(), reference])
-  addCredits(payment.school_id, payment.credits, 'Purchase', reference)
+  if (payment.target !== 'offline') addCredits(payment.school_id, payment.credits, 'Purchase', reference) // offline purchases are delivered as a signed voucher instead
   return { ok: true, credits: payment.credits }
 }
 
@@ -175,6 +184,43 @@ function parseAiQuestions(text) {
     clean.push({ text: questionText, options, answer })
   }
   return clean
+}
+
+/* ---------- signed credit vouchers (online server signs, offline server verifies) ---------- */
+
+function signVoucher(voucher) {
+  const payload = JSON.stringify(voucher)
+  const key = crypto.createPrivateKey({ key: Buffer.from(VOUCHER_PRIVATE, 'base64'), format: 'der', type: 'pkcs8' })
+  return { payload, signature: crypto.sign(null, Buffer.from(payload), key).toString('base64') }
+}
+
+function verifyVoucher(payload, signature) {
+  if (!VOUCHER_PUBLIC) return false
+  try {
+    const key = crypto.createPublicKey({ key: Buffer.from(VOUCHER_PUBLIC, 'base64'), format: 'der', type: 'spki' })
+    return crypto.verify(null, Buffer.from(String(payload)), key, Buffer.from(String(signature), 'base64'))
+  } catch { return false }
+}
+
+async function onlineFetch(pathname, options = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 20000)
+  try {
+    const result = await fetch(`${ONLINE_URL}${pathname}`, { ...options, signal: controller.signal, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } })
+    return { ok: result.ok, status: result.status, body: await result.json().catch(() => ({})) }
+  } catch { throw new Error('NO_INTERNET') } finally { clearTimeout(timer) }
+}
+
+function getSetting(schoolId, name) {
+  return rows('SELECT value FROM settings WHERE key = ?', [`${schoolId}:${name}`]).at(0)?.value || ''
+}
+
+function putSetting(schoolId, name, value) {
+  run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [`${schoolId}:${name}`, String(value)])
+}
+
+function dropSettings(schoolId) {
+  for (const name of ['online_token', 'online_slug', 'online_school_id', 'last_push', 'server_cursor', 'last_sync_done']) run('DELETE FROM settings WHERE key = ?', [`${schoolId}:${name}`])
 }
 
 function createSession(userId) {
@@ -305,7 +351,7 @@ app.get('/api/data', authenticate, (request, response) => {
     ? rows('SELECT submissions.id, submissions.score, submissions.total, submissions.submitted_at, exams.title AS exam_title, users.name AS student_name, users.student_id FROM submissions JOIN exams ON exams.id = submissions.exam_id JOIN users ON users.id = submissions.student_id WHERE submissions.school_id = ? ORDER BY submissions.submitted_at DESC', [schoolId])
     : []
   const balance = creditBalance(schoolId)
-  response.json({ users, exams, questions, results, subjects, offline: OFFLINE, examsOpen: OFFLINE || balance > 0, ...(request.user.role === 'Admin' && !OFFLINE ? { credits: balance } : {}), ...(request.user.role === 'Teacher' ? { aiReady: !OFFLINE && Boolean(ANTHROPIC_KEY), aiRemaining: aiRemaining(request.user) } : {}) })
+  response.json({ users, exams, questions, results, subjects, offline: OFFLINE, examsOpen: balance > 0, ...(request.user.role === 'Admin' ? { credits: balance } : {}), ...(request.user.role === 'Teacher' ? { aiReady: !OFFLINE && Boolean(ANTHROPIC_KEY), aiRemaining: aiRemaining(request.user) } : {}) })
 })
 
 app.post('/api/users', authenticate, requireRole('Admin'), (request, response) => {
@@ -345,6 +391,7 @@ app.delete('/api/exams/:id', authenticate, requireRole('Admin'), (request, respo
   run('DELETE FROM submissions WHERE exam_id = ?', [exam.id])
   run('DELETE FROM questions WHERE exam_id = ?', [exam.id])
   run('DELETE FROM exams WHERE id = ?', [exam.id])
+  sync.recordTombstone(request.user.schoolId, 'exam', exam.id)
   response.sendStatus(204)
 })
 
@@ -370,6 +417,7 @@ app.delete('/api/subjects/:subject', authenticate, requireRole('Admin'), (reques
   if (!rows('SELECT subject FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, subject]).length) return response.status(404).json({ error: 'Subject question set not found.' })
   run('DELETE FROM questions WHERE school_id = ? AND subject = ?', [request.user.schoolId, subject])
   run('DELETE FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, subject])
+  sync.recordTombstone(request.user.schoolId, 'subject', subject)
   response.sendStatus(204)
 })
 
@@ -391,7 +439,7 @@ app.post('/api/submissions', authenticate, requireRole('Student'), (request, res
   const total = examQuestions.length
   const score = examQuestions.reduce((sum, question) => sum + (Number(answers[question.id]) === Number(question.answer) ? 1 : 0), 0)
   run('INSERT INTO submissions (id, school_id, exam_id, student_id, score, total, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), schoolId, examId, request.user.id, score, total, new Date().toISOString()])
-  if (!OFFLINE) addCredits(schoolId, -1, 'Exam attempt', examId + ':' + request.user.id) // never blocks a finished exam; balance stops at 0
+  addCredits(schoolId, -1, 'Exam attempt', examId + ':' + request.user.id) // never blocks a finished exam; balance stops at 0
   response.status(201).json({ score, total })
 })
 
@@ -455,6 +503,7 @@ app.get('/api/billing', authenticate, requireRole('Admin'), (request, response) 
     pricePerCredit: CREDIT_PRICE_KOBO / 100,
     minCredits: MIN_CREDITS,
     maxCredits: MAX_CREDITS,
+    schoolId,
     paymentsReady: Boolean(PAYSTACK_SECRET),
     hasEmail: Boolean(rows('SELECT email FROM schools WHERE id = ?', [schoolId]).at(0)?.email),
     ledger: rows('SELECT change, reason, created_at FROM credit_ledger WHERE school_id = ? ORDER BY created_at DESC LIMIT 50', [schoolId])
@@ -482,7 +531,7 @@ app.post('/api/billing/checkout', authenticate, requireRole('Admin'), async (req
       body: JSON.stringify({ email: school.email, amount: amountKobo, reference, currency: 'NGN', callback_url: origin, metadata: { schoolId: school.id, credits } })
     })
     if (!result.status) return response.status(502).json({ error: 'Could not start the payment. Try again.' })
-    run('INSERT INTO payments (reference, school_id, credits, amount_kobo, status, created_at) VALUES (?, ?, ?, ?, \'pending\', ?)', [reference, school.id, credits, amountKobo, new Date().toISOString()])
+    run('INSERT INTO payments (reference, school_id, credits, amount_kobo, status, created_at, target) VALUES (?, ?, ?, ?, \'pending\', ?, ?)', [reference, school.id, credits, amountKobo, new Date().toISOString(), request.body?.target === 'offline' ? 'offline' : 'online'])
     response.json({ authorizationUrl: result.data.authorization_url, reference })
   } catch (error) {
     console.error('checkout failed', error)
@@ -518,6 +567,264 @@ app.post('/api/paystack/webhook', (request, response) => {
   response.sendStatus(200)
 })
 
+// Online server: hands the school a signed voucher once an offline-target payment has succeeded.
+app.get('/api/billing/voucher/:reference', authenticate, requireRole('Admin'), async (request, response) => {
+  try {
+    if (!VOUCHER_PRIVATE) return response.status(503).json({ error: 'Credit vouchers are not set up on the server yet.' })
+    const reference = String(request.params.reference)
+    let payment = rows('SELECT * FROM payments WHERE reference = ? AND school_id = ?', [reference, request.user.schoolId]).at(0)
+    if (!payment || payment.target !== 'offline') return response.status(404).json({ error: 'Payment not found.' })
+    if (payment.status !== 'success') {
+      const result = await paystack(`/transaction/verify/${encodeURIComponent(reference)}`)
+      if (result.status && result.data?.status === 'success') fulfilPayment(reference, result.data.amount)
+      payment = rows('SELECT * FROM payments WHERE reference = ?', [reference]).at(0)
+    }
+    if (payment.status !== 'success') return response.status(402).json({ error: 'Payment not completed yet.' })
+    response.json(signVoucher({ schoolId: payment.school_id, credits: payment.credits, reference, issuedAt: payment.paid_at }))
+  } catch (error) {
+    console.error('voucher failed', error)
+    response.status(500).json({ error: 'Could not prepare the credits yet.' })
+  }
+})
+
+// Online server: moves credits from the school's website balance into a signed voucher for its school computer.
+app.post('/api/billing/transfer', authenticate, requireRole('Admin'), (request, response) => {
+  try {
+    if (!VOUCHER_PRIVATE) return response.status(503).json({ error: 'Credit transfers are not set up on the server yet.' })
+    const schoolId = request.user.schoolId
+    const reference = String(request.body?.reference || '')
+    if (!/^TRF-[a-f0-9]{16}$/.test(reference)) return response.status(400).json({ error: 'Invalid transfer.' })
+    const existing = rows('SELECT credits, school_id FROM payments WHERE reference = ?', [reference]).at(0)
+    if (existing) {
+      if (existing.school_id !== schoolId) return response.status(404).json({ error: 'Transfer not found.' })
+      return response.json({ reference, credits: existing.credits, balance: creditBalance(schoolId) }) // already done, nothing deducted twice
+    }
+    const credits = Math.floor(Number(request.body?.credits))
+    if (!credits || credits < 1 || credits > MAX_CREDITS) return response.status(400).json({ error: `Move between 1 and ${MAX_CREDITS} credits.` })
+    const balance = creditBalance(schoolId)
+    if (credits > balance) return response.status(400).json({ error: `Your website balance is only ${balance} credits.` })
+    const now = new Date().toISOString()
+    run("INSERT INTO payments (reference, school_id, credits, amount_kobo, status, created_at, paid_at, target) VALUES (?, ?, ?, 0, 'success', ?, ?, 'offline')", [reference, schoolId, credits, now, now])
+    addCredits(schoolId, -credits, 'Moved to school computer', reference)
+    response.json({ reference, credits, balance: creditBalance(schoolId) })
+  } catch (error) {
+    console.error('transfer failed', error)
+    response.status(500).json({ error: 'Could not move the credits.' })
+  }
+})
+
+/* ---------- two-way sync (online server side) ---------- */
+
+app.post('/api/sync', authenticate, requireRole('Admin'), (request, response) => {
+  try {
+    const schoolId = request.user.schoolId
+    const clientTime = Date.parse(String(request.body?.clientTime || ''))
+    if (Number.isNaN(clientTime)) return response.status(400).json({ error: 'Missing clock time.' })
+    const skew = Date.now() - clientTime // how far the school computer's clock is behind this server's
+    const stats = sync.applyChanges(schoolId, request.body?.changes, skew)
+    const serverTime = new Date().toISOString()
+    const changes = sync.collectChanges(schoolId, String(request.body?.serverCursor || ''))
+    response.json({ serverTime, changes, stats })
+  } catch (error) {
+    console.error('sync failed', error)
+    response.status(500).json({ error: 'Could not sync right now.' })
+  }
+})
+
+/* ---------- offline server: buy credits online, use them offline ---------- */
+
+const offlineOnly = (_request, response, next) => OFFLINE ? next() : response.status(404).json({ error: 'Not available.' })
+const NO_INTERNET_TEXT = 'No internet connection. Connect this computer to the internet, then try again.'
+
+function offlineFailure(response, error, fallback) {
+  if (error?.message === 'NO_INTERNET') return response.status(503).json({ error: NO_INTERNET_TEXT })
+  console.error(fallback, error)
+  return response.status(500).json({ error: fallback })
+}
+
+app.get('/api/offline/status', authenticate, requireRole('Admin'), offlineOnly, (request, response) => {
+  const schoolId = request.user.schoolId
+  response.json({
+    credits: creditBalance(schoolId),
+    pricePerCredit: CREDIT_PRICE_KOBO / 100,
+    minCredits: MIN_CREDITS,
+    maxCredits: MAX_CREDITS,
+    linked: Boolean(getSetting(schoolId, 'online_token')),
+    onlineSlug: getSetting(schoolId, 'online_slug'),
+    lastSync: getSetting(schoolId, 'last_sync_done'),
+    pending: rows("SELECT reference, credits FROM pending_purchases WHERE school_id = ? AND status = 'pending' ORDER BY created_at", [schoolId]),
+    ledger: rows('SELECT change, reason, created_at FROM credit_ledger WHERE school_id = ? ORDER BY created_at DESC LIMIT 50', [schoolId])
+  })
+})
+
+app.post('/api/offline/link', authenticate, requireRole('Admin'), offlineOnly, async (request, response) => {
+  try {
+    const schoolId = request.user.schoolId
+    const slug = String(request.body?.slug || '').trim().replace(/\/+$/, '').split('/').pop().toLowerCase()
+    const username = String(request.body?.username || '').trim()
+    const password = String(request.body?.password || '')
+    if (!slug || !username || !password) return response.status(400).json({ error: 'Enter the online school link name, username and password.' })
+    const login = await onlineFetch('/api/login', { method: 'POST', body: JSON.stringify({ role: 'Admin', identifier: username, password, schoolSlug: slug }) })
+    if (!login.ok || !login.body?.token) return response.status(400).json({ error: login.body?.error || 'Could not sign in to the online account.' })
+    const info = await onlineFetch('/api/billing', { headers: { Authorization: `Bearer ${login.body.token}` } })
+    if (!info.ok || !info.body?.schoolId) return response.status(400).json({ error: 'That online account is not a school admin account.' })
+    putSetting(schoolId, 'online_token', login.body.token)
+    putSetting(schoolId, 'online_slug', slug)
+    putSetting(schoolId, 'online_school_id', info.body.schoolId)
+    response.json({ ok: true })
+  } catch (error) { offlineFailure(response, error, 'Could not link the online account.') }
+})
+
+app.post('/api/offline/sync', authenticate, requireRole('Admin'), offlineOnly, async (request, response) => {
+  try {
+    const schoolId = request.user.schoolId
+    const token = getSetting(schoolId, 'online_token')
+    if (!token) return response.status(409).json({ error: 'Link your online account first.' })
+    const started = new Date().toISOString()
+    const outgoing = sync.collectChanges(schoolId, getSetting(schoolId, 'last_push'))
+    const result = await onlineFetch('/api/sync', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ clientTime: started, serverCursor: getSetting(schoolId, 'server_cursor'), changes: outgoing })
+    })
+    if (result.status === 401) { dropSettings(schoolId); return response.status(409).json({ error: 'Your online sign-in expired. Link your online account again.' }) }
+    if (!result.ok || !result.body?.serverTime) return response.status(502).json({ error: result.body?.error || 'The website could not sync right now.' })
+    const skew = Date.parse(result.body.serverTime) - Date.parse(started) // how far this computer's clock is behind the website's
+    const stats = sync.applyChanges(schoolId, result.body.changes, -skew)
+    putSetting(schoolId, 'last_push', started)
+    putSetting(schoolId, 'server_cursor', result.body.serverTime)
+    putSetting(schoolId, 'last_sync_done', new Date().toISOString())
+    let creditsAdded = 0
+    try { const claimed = await claimWebsiteCredits(schoolId); creditsAdded = claimed.added || 0 } catch { /* credits are retried automatically */ }
+    response.json({ sent: sync.count(outgoing), received: stats.applied, conflicts: stats.conflicts + Number(result.body.stats?.conflicts || 0), creditsAdded })
+  } catch (error) { offlineFailure(response, error, 'Could not sync right now.') }
+})
+
+app.post('/api/offline/unlink', authenticate, requireRole('Admin'), offlineOnly, (request, response) => {
+  dropSettings(request.user.schoolId)
+  response.json({ ok: true })
+})
+
+app.post('/api/offline/checkout', authenticate, requireRole('Admin'), offlineOnly, async (request, response) => {
+  try {
+    const schoolId = request.user.schoolId
+    const token = getSetting(schoolId, 'online_token')
+    if (!token) return response.status(409).json({ error: 'Link your online account first.' })
+    const credits = Math.floor(Number(request.body?.credits))
+    if (!credits || credits < MIN_CREDITS || credits > MAX_CREDITS) return response.status(400).json({ error: `Buy between ${MIN_CREDITS} and ${MAX_CREDITS} credits.` })
+    const result = await onlineFetch('/api/billing/checkout', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ credits, target: 'offline' }) })
+    if (result.status === 401) { dropSettings(schoolId); return response.status(409).json({ error: 'Your online sign-in expired. Link your online account again.' }) }
+    if (!result.ok || !result.body?.authorizationUrl) return response.status(502).json({ error: result.body?.error || 'Could not start the payment.' })
+    run("INSERT INTO pending_purchases (reference, school_id, credits, created_at, status) VALUES (?, ?, ?, ?, 'pending')", [result.body.reference, schoolId, credits, new Date().toISOString()])
+    response.json({ authorizationUrl: result.body.authorizationUrl, reference: result.body.reference })
+  } catch (error) { offlineFailure(response, error, 'Could not start the payment.') }
+})
+
+// Fetches one signed voucher from the website, checks it, and adds the credits once.
+// Returns 'added' | 'waiting' | 'gone' | 'skipped' | 'relink'.
+async function redeemOne(schoolId, token, onlineSchoolId, reference) {
+  const result = await onlineFetch(`/api/billing/voucher/${encodeURIComponent(reference)}`, { headers: { Authorization: `Bearer ${token}` } })
+  if (result.status === 402) return { state: 'waiting' }
+  if (result.status === 401) { dropSettings(schoolId); return { state: 'relink' } }
+  if (result.status === 404) {
+    if (reference.startsWith('TRF-')) run("UPDATE pending_purchases SET status = 'done' WHERE reference = ?", [reference]) // the transfer never reached the website
+    return { state: 'gone' }
+  }
+  if (!result.ok || !verifyVoucher(result.body?.payload, result.body?.signature)) return { state: 'skipped' }
+  let voucher
+  try { voucher = JSON.parse(result.body.payload) } catch { return { state: 'skipped' } }
+  const credits = Math.floor(Number(voucher.credits))
+  if (voucher.schoolId !== onlineSchoolId || voucher.reference !== reference || !credits || credits < 1 || credits > MAX_CREDITS) return { state: 'skipped' }
+  let added = 0
+  if (!rows('SELECT reference FROM redeemed_vouchers WHERE reference = ?', [reference]).length) {
+    addCredits(schoolId, credits, reference.startsWith('TRF-') ? 'Moved from website' : 'Purchase (online)', reference)
+    run('INSERT INTO redeemed_vouchers (reference, credits, redeemed_at) VALUES (?, ?, ?)', [reference, credits, new Date().toISOString()])
+    added = credits
+  }
+  run("UPDATE pending_purchases SET status = 'done' WHERE reference = ?", [reference])
+  return { state: 'added', added }
+}
+
+// Settles every payment still waiting for its voucher.
+async function settlePending(schoolId) {
+  const token = getSetting(schoolId, 'online_token')
+  const onlineSchoolId = getSetting(schoolId, 'online_school_id')
+  if (!token || !onlineSchoolId) return { error: 'Link your online account first.' }
+  const pending = rows("SELECT reference FROM pending_purchases WHERE school_id = ? AND status = 'pending' ORDER BY created_at", [schoolId])
+  let added = 0
+  let waiting = 0
+  for (const item of pending) {
+    const outcome = await redeemOne(schoolId, token, onlineSchoolId, item.reference)
+    if (outcome.state === 'relink') return { error: 'Your online sign-in expired. Link your online account again.' }
+    if (outcome.state === 'waiting') waiting += 1
+    if (outcome.state === 'added') added += outcome.added
+  }
+  return { added, waiting }
+}
+
+// Moves credits from the school's website balance onto this computer.
+async function moveFromWebsite(schoolId, credits) {
+  const token = getSetting(schoolId, 'online_token')
+  const onlineSchoolId = getSetting(schoolId, 'online_school_id')
+  if (!token || !onlineSchoolId) return { error: 'Link your online account first.' }
+  const reference = 'TRF-' + crypto.randomBytes(8).toString('hex')
+  run("INSERT INTO pending_purchases (reference, school_id, credits, created_at, status) VALUES (?, ?, ?, ?, 'pending')", [reference, schoolId, credits, new Date().toISOString()])
+  try {
+    const result = await onlineFetch('/api/billing/transfer', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ reference, credits }) })
+    if (result.status === 401) { dropSettings(schoolId); return { error: 'Your online sign-in expired. Link your online account again.' } }
+    if (!result.ok) { run('DELETE FROM pending_purchases WHERE reference = ?', [reference]); return { error: result.body?.error || 'The website could not move the credits.' } }
+    const outcome = await redeemOne(schoolId, token, onlineSchoolId, reference)
+    return { added: outcome.state === 'added' ? outcome.added : 0 }
+  } catch (error) {
+    if (error?.message === 'NO_INTERNET') return { error: 'The connection dropped. The credits will be added automatically next time this computer is online.' }
+    throw error
+  }
+}
+
+// Credits bought on the website are added to this computer automatically.
+async function claimWebsiteCredits(schoolId) {
+  const settled = await settlePending(schoolId)
+  if (settled.error) return settled
+  const token = getSetting(schoolId, 'online_token')
+  const info = await onlineFetch('/api/billing', { headers: { Authorization: `Bearer ${token}` } })
+  if (info.status === 401) { dropSettings(schoolId); return { error: 'Your online sign-in expired. Link your online account again.' } }
+  const available = Math.min(MAX_CREDITS, Math.floor(Number(info.body?.credits)))
+  if (!info.ok || !(available > 0)) return { added: settled.added }
+  const moved = await moveFromWebsite(schoolId, available)
+  if (moved.error) return moved
+  return { added: settled.added + moved.added }
+}
+
+let claiming = false
+async function claimForAllSchools() {
+  if (!OFFLINE || claiming) return
+  claiming = true
+  try {
+    for (const school of rows('SELECT id FROM schools')) {
+      if (!getSetting(school.id, 'online_token')) continue
+      try { await claimWebsiteCredits(school.id) } catch { /* offline right now; try again later */ }
+    }
+  } finally { claiming = false }
+}
+
+app.post('/api/offline/redeem', authenticate, requireRole('Admin'), offlineOnly, async (request, response) => {
+  try {
+    const schoolId = request.user.schoolId
+    const result = await settlePending(schoolId)
+    if (result.error) return response.status(409).json({ error: result.error })
+    response.json({ added: result.added, waiting: result.waiting, credits: creditBalance(schoolId) })
+  } catch (error) { offlineFailure(response, error, 'Could not add the credits yet.') }
+})
+
+app.post('/api/offline/claim', authenticate, requireRole('Admin'), offlineOnly, async (request, response) => {
+  try {
+    const schoolId = request.user.schoolId
+    const result = await claimWebsiteCredits(schoolId)
+    if (result.error) return response.status(409).json({ error: result.error })
+    response.json({ added: result.added, credits: creditBalance(schoolId) })
+  } catch (error) { offlineFailure(response, error, 'Could not check for new credits.') }
+})
+
 /* ---------- front-end files ---------- */
 
 app.use('/api', (_request, response) => response.status(404).json({ error: 'Not found.' }))
@@ -546,12 +853,19 @@ async function start() {
   db.run('CREATE TABLE IF NOT EXISTS ai_usage (user_id TEXT NOT NULL, school_id TEXT NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day))')
   db.run('CREATE TABLE IF NOT EXISTS credit_ledger (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, change INTEGER NOT NULL, reason TEXT NOT NULL, reference TEXT, created_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS payments (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, amount_kobo INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT)')
+  db.run('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS pending_purchases (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS redeemed_vouchers (reference TEXT PRIMARY KEY, credits INTEGER NOT NULL, redeemed_at TEXT NOT NULL)')
+  try { db.run("ALTER TABLE payments ADD COLUMN target TEXT NOT NULL DEFAULT 'online'") } catch { /* column already exists */ }
   for (const column of ['email TEXT', 'credits INTEGER NOT NULL DEFAULT 0']) {
     try { db.run(`ALTER TABLE schools ADD COLUMN ${column}`) } catch { /* column already exists */ }
   }
+  sync = createSync({ rows, exec: (sql, values) => db.run(sql, values), persist })
+  sync.migrate()
   for (const school of rows('SELECT id FROM schools WHERE id NOT IN (SELECT DISTINCT school_id FROM credit_ledger)')) addCredits(school.id, STARTER_CREDITS, 'Free starter credits')
   db.run('DELETE FROM sessions WHERE expires_at < ?', [Date.now()])
   persist()
+  if (OFFLINE) { setTimeout(() => void claimForAllSchools(), 30000); setInterval(() => void claimForAllSchools(), 5 * 60 * 1000) }
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`TIMPRIEST EDU server running on port ${PORT}, database at ${DB_FILE}`)
     if (OFFLINE) {
