@@ -1,0 +1,6 @@
+Done. The public key was saved to server/voucher-public.txt (safe to keep in the project and GitHub).
+
+Now add this as a Railway variable named VOUCHER_PRIVATE_KEY.
+It is SECRET: never put it in a file, GitHub or a chat.
+
+

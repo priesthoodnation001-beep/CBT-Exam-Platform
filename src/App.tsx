@@ -21,7 +21,7 @@ type Exam = { id: string; title: string; subject: string; date: string; time: st
 type Question = { id: string; examId?: string; subject: string; text: string; options: string[]; answer?: number }
 type Result = { id: string; exam_title: string; student_name: string; student_id: string; score: number; total: number; submitted_at: string }
 type SubjectSetting = { subject: string; duration: number; approved: number; approved_at?: string }
-type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: Result[]; subjects: SubjectSetting[]; credits?: number; examsOpen?: boolean }
+type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: Result[]; subjects: SubjectSetting[]; credits?: number; examsOpen?: boolean; aiReady?: boolean; aiRemaining?: number; offline?: boolean }
 type School = { name: string; slug: string }
 
 const emptyData: Data = { users: [], exams: [], questions: [], results: [], subjects: [] }
@@ -312,11 +312,11 @@ function App() {
               {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} />}
               {tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
               {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
-              {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} />}
+              {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} aiReady={data.aiReady} aiRemaining={data.aiRemaining} />}
               {tab === 'My exams' && <ExamList exams={data.exams} student={isStudent} centre={centre} start={(exam) => { beginExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}
               {tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} approve={approveSubject} deleteSubject={deleteSubject} />}
               {tab === 'Results' && isAdmin && <Results results={data.results} />}
-              {tab === 'Billing' && isAdmin && <Billing token={token} showNotice={showNotice} refresh={refresh} />}
+              {tab === 'Billing' && isAdmin && (data.offline ? <OfflineBilling token={token} showNotice={showNotice} refresh={refresh} /> : <Billing token={token} showNotice={showNotice} refresh={refresh} />)}
               {tab === 'Profile' && !isStudent && <Profile session={session} token={token} showNotice={showNotice} />}
             </>}
         </section>
@@ -429,6 +429,87 @@ function Billing({ token, showNotice, refresh }: { token: string | null; showNot
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button" type="submit" disabled={busy || !info.paymentsReady}>{busy ? 'Opening Paystack...' : 'Pay with Paystack'}</button>
         </form>
+        {info.ledger.length > 0 && <>
+          <h3>Credit history</h3>
+          {info.ledger.map((entry, index) => <p key={index}>{entry.change > 0 ? '+' : ''}{entry.change} · {entry.reason} · {new Date(entry.created_at).toLocaleDateString()}</p>)}
+        </>}
+      </div>
+    </>
+  )
+}
+
+type OfflineInfo = { credits: number; pricePerCredit: number; minCredits: number; maxCredits: number; linked: boolean; onlineSlug: string; pending: { reference: string; credits: number }[]; ledger: { change: number; reason: string; created_at: string }[] }
+
+function OfflineBilling({ token, showNotice, refresh }: { token: string | null; showNotice: (message: string) => void; refresh: () => Promise<void> | void }) {
+  const [info, setInfo] = useState<OfflineInfo | null>(null)
+  const [credits, setCredits] = useState(100)
+  const [slug, setSlug] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function load() {
+    try { setInfo(await api<OfflineInfo>('/offline/status', token)) } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not load billing.') }
+  }
+
+  useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function post<T>(path: string, body: object): Promise<T> {
+    return api<T>(path, token, { method: 'POST', body: JSON.stringify(body) })
+  }
+
+  async function run(action: () => Promise<void>) {
+    setBusy(true); setError('')
+    try { await action() } catch (failure) { setError(failure instanceof Error ? failure.message : 'Something went wrong.'); await load() } finally { setBusy(false) }
+  }
+
+  const link = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void run(async () => { await post('/offline/link', { slug, username, password }); setPassword(''); await load(); showNotice('Online account linked.') }) }
+  const buy = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void run(async () => { const result = await post<{ authorizationUrl: string }>('/offline/checkout', { credits }); window.open(result.authorizationUrl, '_blank'); await load(); showNotice('Finish the payment in your browser, then come back and tap "I have paid".') }) }
+  const redeem = () => void run(async () => { const result = await post<{ added: number; waiting: number }>('/offline/redeem', {}); await refresh(); await load(); showNotice(result.added > 0 ? `${result.added} credits added.` : result.waiting > 0 ? 'Payment not confirmed yet. Wait a moment and try again.' : 'No payments are waiting.') })
+  const unlink = () => void run(async () => { await post('/offline/unlink', {}); await load() })
+
+  if (!info) return <p>{error || 'Loading billing...'}</p>
+  const total = credits * info.pricePerCredit
+  return (
+    <>
+      <div className="section-heading"><div><p className="eyebrow">This school computer</p><h2>Billing</h2></div></div>
+      <div className="profile-panel">
+        <div className="profile-details">
+          <strong>{info.credits} credits left</strong>
+          <span>One credit is used each time a student submits an exam. Exams stop at 0 credits.</span>
+          <span>₦{info.pricePerCredit.toLocaleString()} per credit</span>
+        </div>
+        {error && <p className="form-error">{error}</p>}
+        {!info.linked ? (
+          <>
+            <h3>Link your online account</h3>
+            <p>Buying credits needs internet once. Sign in with the school admin account you registered on the online website. Exams keep working offline.</p>
+            <form className="profile-form" onSubmit={link}>
+              <label>Online school link name<input value={slug} onChange={(event) => setSlug(event.target.value)} placeholder="e.g. northbridge-school" required /></label>
+              <label>Online admin username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="off" required /></label>
+              <label>Online admin password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="off" required /></label>
+              <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Linking...' : 'Link online account'}</button>
+            </form>
+          </>
+        ) : (
+          <>
+            <h3>Buy credits</h3>
+            <p>Linked to <strong>{info.onlineSlug}</strong>. This computer must be connected to the internet while you pay. Buy {info.minCredits} to {info.maxCredits.toLocaleString()} credits.</p>
+            <form className="profile-form" onSubmit={buy}>
+              <label>Number of credits<input type="number" min={info.minCredits} max={info.maxCredits} value={credits} onChange={(event) => setCredits(Number(event.target.value))} required /></label>
+              <p><strong>Total: ₦{total.toLocaleString()}</strong></p>
+              <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Please wait...' : 'Pay with Paystack'}</button>
+            </form>
+            {info.pending.length > 0 && (
+              <>
+                <p>{info.pending.length} payment{info.pending.length > 1 ? 's are' : ' is'} waiting to be added ({info.pending.reduce((sum, item) => sum + item.credits, 0)} credits).</p>
+                <button className="primary-button" type="button" onClick={redeem} disabled={busy}>I have paid, add my credits</button>
+              </>
+            )}
+            <p><button className="text-button" type="button" onClick={unlink} disabled={busy}>Unlink online account</button></p>
+          </>
+        )}
         {info.ledger.length > 0 && <>
           <h3>Credit history</h3>
           {info.ledger.map((entry, index) => <p key={index}>{entry.change > 0 ? '+' : ''}{entry.change} · {entry.reason} · {new Date(entry.created_at).toLocaleDateString()}</p>)}
