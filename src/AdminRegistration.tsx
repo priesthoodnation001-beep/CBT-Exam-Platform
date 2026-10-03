@@ -21,7 +21,8 @@ export default function AdminRegistration({ onBack, onComplete }: Props) {
           schoolName: values.get('schoolName'),
           name: values.get('name'),
           username: values.get('username'),
-          password: values.get('password')
+          password: values.get('password'),
+          email: values.get('email')
         })
       })
       const body = await response.json().catch(() => ({ error: 'Could not create the school account.' }))
@@ -54,6 +55,7 @@ export default function AdminRegistration({ onBack, onComplete }: Props) {
           <form onSubmit={submit}>
             <label>School name<input name="schoolName" placeholder="Enter your school's name" required /></label>
             <label>Your full name<input name="name" placeholder="Enter your full name" required /></label>
+            <label>School email (for payment receipts)<input name="email" type="email" placeholder="school@example.com" autoComplete="email" required /></label>
             <label>Admin username<input name="username" placeholder="Choose a username" autoComplete="username" required /></label>
             <label>Password<input name="password" type="password" placeholder="At least 6 characters" minLength={6} autoComplete="new-password" required /></label>
             {error && <p className="form-error">{error}</p>}

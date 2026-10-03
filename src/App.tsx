@@ -15,13 +15,13 @@ import './mobile.css'
 
 type Role = 'Admin' | 'Teacher' | 'Student'
 type EntryPage = 'home' | 'login' | 'register'
-type Tab = 'Overview' | 'Accounts' | 'Schedule' | 'Approvals' | 'Questions' | 'My exams' | 'Results' | 'Profile'
+type Tab = 'Overview' | 'Accounts' | 'Schedule' | 'Approvals' | 'Questions' | 'My exams' | 'Results' | 'Billing' | 'Profile'
 type Account = { id: string; role: Role; name: string; username?: string; studentId?: string; classSection?: string; schoolName?: string; schoolSlug?: string }
 type Exam = { id: string; title: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number; taken?: number }
 type Question = { id: string; examId?: string; subject: string; text: string; options: string[]; answer?: number }
 type Result = { id: string; exam_title: string; student_name: string; student_id: string; score: number; total: number; submitted_at: string }
 type SubjectSetting = { subject: string; duration: number; approved: number; approved_at?: string }
-type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: Result[]; subjects: SubjectSetting[] }
+type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: Result[]; subjects: SubjectSetting[]; credits?: number; examsOpen?: boolean }
 type School = { name: string; slug: string }
 
 const emptyData: Data = { users: [], exams: [], questions: [], results: [], subjects: [] }
@@ -42,6 +42,12 @@ function readSchoolSlug(): string {
   const first = window.location.pathname.split('/').filter(Boolean)[0] || ''
   if (!first || first === 'api' || first === 'assets') return ''
   try { return decodeURIComponent(first).toLowerCase() } catch { return '' }
+}
+
+function showSchoolAddress(slug?: string) {
+  if (!slug || Capacitor.isNativePlatform()) return
+  const target = `/${encodeURIComponent(slug)}`
+  if (window.location.pathname !== target) window.history.replaceState(null, '', target)
 }
 
 function greeting() {
@@ -70,7 +76,7 @@ function App() {
   const [data, setData] = useState<Data>(emptyData)
   const [loginRole, setLoginRole] = useState<Role>('Admin')
   const [loginError, setLoginError] = useState('')
-  const [tab, setTab] = useState<Tab>('Overview')
+  const [tab, setTab] = useState<Tab>(() => new URLSearchParams(window.location.search).has('reference') ? 'Billing' : 'Overview')
   const [notice, setNotice] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [showAccountForm, setShowAccountForm] = useState(false)
@@ -103,6 +109,7 @@ function App() {
         const loaded = await api<Data>('/data', stored)
         if (!active) return
         setToken(stored); setSession(result.user); setData(loaded)
+        showSchoolAddress(result.user.schoolSlug)
       } catch { saveToken(null) } finally { if (active) setRestoring(false) }
     })()
     return () => { active = false }
@@ -113,6 +120,12 @@ function App() {
     window.addEventListener('timpriest-expired', expire)
     return () => window.removeEventListener('timpriest-expired', expire)
   }, [])
+
+  useEffect(() => {
+    if (!session?.schoolSlug || Capacitor.isNativePlatform()) return
+    const target = `/${session.schoolSlug}`
+    if (window.location.pathname !== target) window.history.replaceState(null, '', target)
+  }, [session])
 
   useEffect(() => {
     let active = true
@@ -130,10 +143,15 @@ function App() {
 
   const refresh = async (activeToken = token) => { if (!activeToken) return; setData(await api<Data>('/data', activeToken)) }
   const showNotice = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3000) }
+  const beginExam = (exam: Exam) => {
+    if (data.examsOpen === false) { showNotice('Exams are unavailable because this school has run out of credits. Please tell your school admin.'); return }
+    setActiveExam(exam)
+  }
 
   function startSession(result: { token: string; user: Account }) {
     saveToken(result.token)
     setToken(result.token); setSession(result.user); setTab('Overview'); setMenuOpen(false)
+    showSchoolAddress(result.user.schoolSlug)
   }
 
   async function login(event: FormEvent<HTMLFormElement>) {
@@ -167,9 +185,13 @@ function App() {
   }
 
   function logout() {
-    if (token) void api('/logout', token, { method: 'POST' }).catch(() => undefined)
+    const slug = session?.schoolSlug
+    const goToSchool = () => { if (slug && !Capacitor.isNativePlatform()) window.location.assign(`/${slug}`) }
+    if (token) void api('/logout', token, { method: 'POST' }).catch(() => undefined).finally(goToSchool)
+    else goToSchool()
     saveToken(null)
     setToken(null); setSession(null); setActiveExam(null); setSubmitted(false); setData(emptyData); setMenuOpen(false); setEntryPage('login')
+    if (!Capacitor.isNativePlatform() && session?.schoolSlug) window.location.assign(`/${session.schoolSlug}`)
   }
 
   async function addAccount(event: FormEvent<HTMLFormElement>) {
@@ -248,10 +270,9 @@ function App() {
   const isStudent = session.role === 'Student'
   const centre = session.schoolName || 'Your school'
   const firstName = session.name.split(' ')[0]
-  const linkBase = API_BASE || window.location.origin
-  const navItems: Tab[] = isAdmin ? ['Overview', 'Accounts', 'Schedule', 'Approvals', 'Results', 'Profile'] : isTeacher ? ['Overview', 'Questions', 'My exams', 'Profile'] : ['Overview', 'My exams']
+  const navItems: Tab[] = isAdmin ? ['Overview', 'Accounts', 'Schedule', 'Approvals', 'Results', 'Billing', 'Profile'] : isTeacher ? ['Overview', 'Questions', 'My exams', 'Profile'] : ['Overview', 'My exams']
   const examQuestions = activeExam ? data.questions.filter((question) => question.examId === activeExam.id || (!question.examId && question.subject === activeExam.subject)) : []
-  const navIcon = (item: Tab) => item === 'Overview' ? '◈' : item === 'Accounts' ? '♙' : item === 'Schedule' || item === 'My exams' ? '▣' : item === 'Questions' ? '✦' : item === 'Profile' ? '☺' : '▥'
+  const navIcon = (item: Tab) => item === 'Overview' ? '◈' : item === 'Accounts' ? '♙' : item === 'Schedule' || item === 'My exams' ? '▣' : item === 'Questions' ? '✦' : item === 'Profile' ? '☺' : item === 'Billing' ? '₦' : '▥'
 
   return (
     <div className={menuOpen ? 'app-shell menu-open' : 'app-shell'}>
@@ -283,19 +304,19 @@ function App() {
                   <p className="eyebrow">{isAdmin ? 'Administrator console' : isTeacher ? 'Teacher workspace' : 'Student portal'}</p>
                   <h1>{isAdmin ? `${greeting()}, ${firstName}.` : `Welcome back, ${firstName}.`}</h1>
                   <p className="intro-copy">{isAdmin ? 'Manage your people, exams, schedules, and published results.' : isTeacher ? 'Prepare subject questions one step at a time.' : 'Your exam schedule is ready when you are.'}</p>
-                  {isAdmin && session.schoolSlug && <p className="intro-copy share-link">Your school's sign-in link: <strong>{linkBase}/{session.schoolSlug}</strong></p>}
                 </div>
                 {isAdmin && <button className="primary-button" onClick={() => { setTab('Schedule'); setShowExamForm(true) }}>+ Create exam</button>}
                 {isTeacher && <button className="primary-button" onClick={() => setTab('Questions')}>+ Set questions</button>}
-                {isStudent && <button className="primary-button" onClick={() => { const next = data.exams.find((exam) => exam.status === 'Scheduled' && !exam.taken); setTab('My exams'); if (next) setActiveExam(next); else showNotice('No exam is available to start right now.') }}>Enter exam →</button>}
+                {isStudent && <button className="primary-button" onClick={() => { const next = data.exams.find((exam) => exam.status === 'Scheduled' && !exam.taken); setTab('My exams'); if (next) beginExam(next); else showNotice('No exam is available to start right now.') }}>Enter exam →</button>}
               </div>
-              {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={setActiveExam} />}
+              {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} />}
               {tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
               {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
               {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} />}
-              {tab === 'My exams' && <ExamList exams={data.exams} student={isStudent} centre={centre} start={(exam) => { setActiveExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}
+              {tab === 'My exams' && <ExamList exams={data.exams} student={isStudent} centre={centre} start={(exam) => { beginExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}
               {tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} approve={approveSubject} deleteSubject={deleteSubject} />}
               {tab === 'Results' && isAdmin && <Results results={data.results} />}
+              {tab === 'Billing' && isAdmin && <Billing token={token} showNotice={showNotice} refresh={refresh} />}
               {tab === 'Profile' && !isStudent && <Profile session={session} token={token} showNotice={showNotice} />}
             </>}
         </section>
@@ -342,6 +363,76 @@ function Profile({ session, token, showNotice }: { session: Account; token: stri
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Saving...' : 'Change password'}</button>
         </form>
+      </div>
+    </>
+  )
+}
+
+type BillingInfo = { credits: number; pricePerCredit: number; minCredits: number; maxCredits: number; paymentsReady: boolean; hasEmail: boolean; ledger: { change: number; reason: string; created_at: string }[] }
+
+function Billing({ token, showNotice, refresh }: { token: string | null; showNotice: (message: string) => void; refresh: () => Promise<void> | void }) {
+  const [info, setInfo] = useState<BillingInfo | null>(null)
+  const [credits, setCredits] = useState(100)
+  const [email, setEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function load() {
+    try { setInfo(await api<BillingInfo>('/billing', token)) } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not load billing.') }
+  }
+
+  useEffect(() => {
+    void (async () => {
+      const reference = new URLSearchParams(window.location.search).get('reference')
+      if (reference) {
+        try {
+          const result = await api<{ status: string }>(`/billing/verify/${encodeURIComponent(reference)}`, token)
+          showNotice(result.status === 'success' ? 'Payment received. Your credits have been added.' : 'Payment not confirmed yet. Tap Refresh in a moment.')
+        } catch { showNotice('Could not confirm the payment yet. Tap Refresh in a moment.') }
+        window.history.replaceState(null, '', window.location.pathname)
+        await refresh()
+      }
+      await load()
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function buy(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setBusy(true); setError('')
+    try {
+      const result = await api<{ authorizationUrl: string }>('/billing/checkout', token, { method: 'POST', body: JSON.stringify({ credits, ...(email ? { email } : {}) }) })
+      if (Capacitor.isNativePlatform()) { window.open(result.authorizationUrl, '_blank'); setBusy(false) } else window.location.href = result.authorizationUrl
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not start the payment.'); setBusy(false) }
+  }
+
+  async function reload() { await refresh(); await load(); showNotice('Balance updated.') }
+
+  if (!info) return <p>{error || 'Loading billing...'}</p>
+  const total = credits * info.pricePerCredit
+  return (
+    <>
+      <div className="section-heading"><div><p className="eyebrow">Your school</p><h2>Billing</h2></div><button className="text-button" onClick={() => void reload()}>Refresh</button></div>
+      <div className="profile-panel">
+        <div className="profile-details">
+          <strong>{info.credits} credits left</strong>
+          <span>One credit is used each time a student submits an exam.</span>
+          <span>₦{info.pricePerCredit.toLocaleString()} per credit</span>
+        </div>
+        <h3>Buy credits</h3>
+        <p>Buy {info.minCredits} to {info.maxCredits.toLocaleString()} credits. Payment is handled securely by Paystack.</p>
+        <form className="profile-form" onSubmit={buy}>
+          <label>Number of credits<input type="number" min={info.minCredits} max={info.maxCredits} value={credits} onChange={(event) => setCredits(Number(event.target.value))} required /></label>
+          {!info.hasEmail && <label>School email (for receipts)<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>}
+          <p><strong>Total: ₦{total.toLocaleString()}</strong></p>
+          {!info.paymentsReady && <p className="form-error">Payments are not switched on yet.</p>}
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button" type="submit" disabled={busy || !info.paymentsReady}>{busy ? 'Opening Paystack...' : 'Pay with Paystack'}</button>
+        </form>
+        {info.ledger.length > 0 && <>
+          <h3>Credit history</h3>
+          {info.ledger.map((entry, index) => <p key={index}>{entry.change > 0 ? '+' : ''}{entry.change} · {entry.reason} · {new Date(entry.created_at).toLocaleDateString()}</p>)}
+        </>}
       </div>
     </>
   )

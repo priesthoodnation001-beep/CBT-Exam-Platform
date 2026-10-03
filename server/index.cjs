@@ -10,12 +10,17 @@ const DB_FILE = path.join(DATA_DIR, 'timpriest-v2.sqlite')
 const CLIENT_DIR = path.join(__dirname, '..', 'dist')
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000
 const RESERVED_SLUGS = new Set(['api', 'assets', 'admin', 'login', 'register', 'static', 'favicon.ico'])
+const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY || ''
+const STARTER_CREDITS = Number(process.env.STARTER_CREDITS || 10)
+const CREDIT_PRICE_KOBO = Number(process.env.CREDIT_PRICE_KOBO || 5000) // 5000 kobo = N50 per credit
+const MIN_CREDITS = 10
+const MAX_CREDITS = 5000
 const app = express()
 const attempts = new Map()
 let db
 
 app.set('trust proxy', 1)
-app.use(express.json({ limit: '1mb' }))
+app.use(express.json({ limit: '1mb', verify: (request, _response, buffer) => { request.rawBody = buffer } }))
 app.use((request, response, next) => {
   response.setHeader('Access-Control-Allow-Origin', '*')
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
@@ -99,6 +104,36 @@ function makeSlug(name) {
   return slug
 }
 
+/* ---------- credits & payments ---------- */
+
+function creditBalance(schoolId) {
+  return Number(rows('SELECT credits FROM schools WHERE id = ?', [schoolId]).at(0)?.credits || 0)
+}
+
+function addCredits(schoolId, change, reason, reference = null) {
+  run('UPDATE schools SET credits = MAX(0, credits + ?) WHERE id = ?', [change, schoolId])
+  run('INSERT INTO credit_ledger (id, school_id, change, reason, reference, created_at) VALUES (?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), schoolId, change, reason, reference, new Date().toISOString()])
+}
+
+// Safe to call many times for one payment: credits are added only once per reference.
+function fulfilPayment(reference, paidAmountKobo) {
+  const payment = rows('SELECT * FROM payments WHERE reference = ?', [reference]).at(0)
+  if (!payment) return { ok: false, error: 'Unknown payment.' }
+  if (payment.status === 'success') return { ok: true, already: true, credits: payment.credits }
+  if (Number(paidAmountKobo) < Number(payment.amount_kobo)) return { ok: false, error: 'Amount paid does not match.' }
+  run('UPDATE payments SET status = \'success\', paid_at = ? WHERE reference = ?', [new Date().toISOString(), reference])
+  addCredits(payment.school_id, payment.credits, 'Purchase', reference)
+  return { ok: true, credits: payment.credits }
+}
+
+async function paystack(pathname, options = {}) {
+  const result = await fetch(`https://api.paystack.co${pathname}`, {
+    ...options,
+    headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' }
+  })
+  return result.json()
+}
+
 function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex')
   run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [hashToken(token), userId, Date.now() + SESSION_MS])
@@ -143,13 +178,15 @@ app.get('/api/schools/:slug', (request, response) => {
 })
 
 app.post('/api/register-admin', (request, response) => {
-  const { schoolName, name, username, password } = request.body || {}
+  const { schoolName, name, username, password, email } = request.body || {}
   if (!schoolName || String(schoolName).trim().length < 2) return response.status(400).json({ error: 'Enter your school name.' })
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) return response.status(400).json({ error: 'Enter a valid email address for payment receipts.' })
   if (!name || !username || !password || String(password).length < 6) return response.status(400).json({ error: 'Name, username, and a password of at least 6 characters are required.' })
   if (rows('SELECT id FROM users WHERE lower(username) = lower(?) AND deleted = 0', [String(username).trim()]).length) return response.status(409).json({ error: 'That username is already in use. Choose another one.' })
   const schoolId = crypto.randomUUID()
   const slug = makeSlug(schoolName)
-  run('INSERT INTO schools (id, name, slug, created_at) VALUES (?, ?, ?, ?)', [schoolId, String(schoolName).trim(), slug, new Date().toISOString()])
+  run('INSERT INTO schools (id, name, slug, created_at, email, credits) VALUES (?, ?, ?, ?, ?, 0)', [schoolId, String(schoolName).trim(), slug, new Date().toISOString(), String(email).trim().toLowerCase()])
+  addCredits(schoolId, STARTER_CREDITS, 'Free starter credits')
   run('INSERT INTO users (id, school_id, role, name, username, password_hash, student_id, class_section, deleted) VALUES (?, ?, \'Admin\', ?, ?, ?, NULL, NULL, 0)', [crypto.randomUUID(), schoolId, String(name).trim(), String(username).trim(), hashPassword(String(password))])
   response.status(201).json({ school: { name: String(schoolName).trim(), slug } })
 })
@@ -224,7 +261,8 @@ app.get('/api/data', authenticate, (request, response) => {
   const results = request.user.role === 'Admin'
     ? rows('SELECT submissions.id, submissions.score, submissions.total, submissions.submitted_at, exams.title AS exam_title, users.name AS student_name, users.student_id FROM submissions JOIN exams ON exams.id = submissions.exam_id JOIN users ON users.id = submissions.student_id WHERE submissions.school_id = ? ORDER BY submissions.submitted_at DESC', [schoolId])
     : []
-  response.json({ users, exams, questions, results, subjects })
+  const balance = creditBalance(schoolId)
+  response.json({ users, exams, questions, results, subjects, examsOpen: balance > 0, ...(request.user.role === 'Admin' ? { credits: balance } : {}) })
 })
 
 app.post('/api/users', authenticate, requireRole('Admin'), (request, response) => {
@@ -310,7 +348,80 @@ app.post('/api/submissions', authenticate, requireRole('Student'), (request, res
   const total = examQuestions.length
   const score = examQuestions.reduce((sum, question) => sum + (Number(answers[question.id]) === Number(question.answer) ? 1 : 0), 0)
   run('INSERT INTO submissions (id, school_id, exam_id, student_id, score, total, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), schoolId, examId, request.user.id, score, total, new Date().toISOString()])
+  addCredits(schoolId, -1, 'Exam attempt', examId + ':' + request.user.id) // never blocks a finished exam; balance stops at 0
   response.status(201).json({ score, total })
+})
+
+/* ---------- billing ---------- */
+
+app.get('/api/billing', authenticate, requireRole('Admin'), (request, response) => {
+  const schoolId = request.user.schoolId
+  response.json({
+    credits: creditBalance(schoolId),
+    pricePerCredit: CREDIT_PRICE_KOBO / 100,
+    minCredits: MIN_CREDITS,
+    maxCredits: MAX_CREDITS,
+    paymentsReady: Boolean(PAYSTACK_SECRET),
+    hasEmail: Boolean(rows('SELECT email FROM schools WHERE id = ?', [schoolId]).at(0)?.email),
+    ledger: rows('SELECT change, reason, created_at FROM credit_ledger WHERE school_id = ? ORDER BY created_at DESC LIMIT 50', [schoolId])
+  })
+})
+
+app.post('/api/billing/checkout', authenticate, requireRole('Admin'), async (request, response) => {
+  try {
+    if (!PAYSTACK_SECRET) return response.status(503).json({ error: 'Payments are not set up yet.' })
+    const credits = Math.floor(Number(request.body?.credits))
+    if (!credits || credits < MIN_CREDITS || credits > MAX_CREDITS) return response.status(400).json({ error: `Buy between ${MIN_CREDITS} and ${MAX_CREDITS} credits.` })
+    let school = rows('SELECT * FROM schools WHERE id = ?', [request.user.schoolId]).at(0)
+    if (!school) return response.status(404).json({ error: 'School not found.' })
+    if (!school.email) {
+      const email = String(request.body?.email || '').trim().toLowerCase()
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return response.status(400).json({ error: 'Enter an email address for payment receipts.' })
+      run('UPDATE schools SET email = ? WHERE id = ?', [email, school.id])
+      school = { ...school, email }
+    }
+    const reference = 'TPE-' + crypto.randomBytes(10).toString('hex')
+    const amountKobo = credits * CREDIT_PRICE_KOBO
+    const origin = request.body?.returnUrl && /^https?:\/\//.test(String(request.body.returnUrl)) ? String(request.body.returnUrl) : `${request.protocol}://${request.get('host')}/${school.slug}`
+    const result = await paystack('/transaction/initialize', {
+      method: 'POST',
+      body: JSON.stringify({ email: school.email, amount: amountKobo, reference, currency: 'NGN', callback_url: origin, metadata: { schoolId: school.id, credits } })
+    })
+    if (!result.status) return response.status(502).json({ error: 'Could not start the payment. Try again.' })
+    run('INSERT INTO payments (reference, school_id, credits, amount_kobo, status, created_at) VALUES (?, ?, ?, ?, \'pending\', ?)', [reference, school.id, credits, amountKobo, new Date().toISOString()])
+    response.json({ authorizationUrl: result.data.authorization_url, reference })
+  } catch (error) {
+    console.error('checkout failed', error)
+    response.status(500).json({ error: 'Could not start the payment.' })
+  }
+})
+
+// Called when the school returns from Paystack, as a backup in case the webhook is slow.
+app.get('/api/billing/verify/:reference', authenticate, requireRole('Admin'), async (request, response) => {
+  try {
+    const reference = String(request.params.reference)
+    const payment = rows('SELECT * FROM payments WHERE reference = ? AND school_id = ?', [reference, request.user.schoolId]).at(0)
+    if (!payment) return response.status(404).json({ error: 'Payment not found.' })
+    if (payment.status !== 'success') {
+      const result = await paystack(`/transaction/verify/${encodeURIComponent(reference)}`)
+      if (result.status && result.data?.status === 'success') fulfilPayment(reference, result.data.amount)
+    }
+    const updated = rows('SELECT status FROM payments WHERE reference = ?', [reference]).at(0)
+    response.json({ status: updated.status, credits: creditBalance(request.user.schoolId) })
+  } catch (error) {
+    console.error('verify failed', error)
+    response.status(500).json({ error: 'Could not confirm the payment yet.' })
+  }
+})
+
+app.post('/api/paystack/webhook', (request, response) => {
+  const signature = request.get('x-paystack-signature') || ''
+  const expected = crypto.createHmac('sha512', PAYSTACK_SECRET).update(request.rawBody || Buffer.alloc(0)).digest('hex')
+  const valid = PAYSTACK_SECRET && signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
+  if (!valid) return response.sendStatus(401)
+  const event = request.body || {}
+  if (event.event === 'charge.success' && event.data?.reference) fulfilPayment(event.data.reference, event.data.amount)
+  response.sendStatus(200)
 })
 
 /* ---------- front-end files ---------- */
@@ -338,6 +449,12 @@ async function start() {
   db.run('CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, exam_id TEXT NOT NULL, student_id TEXT NOT NULL, score INTEGER NOT NULL, total INTEGER NOT NULL, submitted_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS subject_settings (school_id TEXT NOT NULL, subject TEXT NOT NULL, duration INTEGER NOT NULL DEFAULT 30, approved INTEGER NOT NULL DEFAULT 0, approved_at TEXT, PRIMARY KEY (school_id, subject))')
   db.run('CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS credit_ledger (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, change INTEGER NOT NULL, reason TEXT NOT NULL, reference TEXT, created_at TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS payments (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, amount_kobo INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT)')
+  for (const column of ['email TEXT', 'credits INTEGER NOT NULL DEFAULT 0']) {
+    try { db.run(`ALTER TABLE schools ADD COLUMN ${column}`) } catch { /* column already exists */ }
+  }
+  for (const school of rows('SELECT id FROM schools WHERE id NOT IN (SELECT DISTINCT school_id FROM credit_ledger)')) addCredits(school.id, STARTER_CREDITS, 'Free starter credits')
   db.run('DELETE FROM sessions WHERE expires_at < ?', [Date.now()])
   persist()
   app.listen(PORT, '0.0.0.0', () => console.log(`TIMPRIEST EDU server running on port ${PORT}, database at ${DB_FILE}`))
