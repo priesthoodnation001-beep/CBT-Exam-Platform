@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Capacitor } from '@capacitor/core'
 import { NativeBiometric } from '@capgo/capacitor-native-biometric'
@@ -84,7 +84,7 @@ function AppInner() {
 
   useEffect(() => {
     if (!token) return
-    const ping = () => { fetch(`${API_BASE}/api/ping`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }).catch(() => undefined) }
+    const ping = () => { fetch(`${API_BASE}/api/ping`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }).then((result) => { if (result.status === 401) window.dispatchEvent(new Event('timpriest-expired')) }).catch(() => undefined) } // 401 means the admin signed this device out
     ping()
     const interval = window.setInterval(ping, 10000)
     return () => window.clearInterval(interval)
@@ -317,7 +317,7 @@ function AppInner() {
                 {isTeacher && <button className="primary-button" onClick={() => setTab('Questions')}>+ Set questions</button>}
                 {isStudent && <button className="primary-button" onClick={() => { const next = data.exams.find((exam) => exam.status === 'Scheduled' && !exam.taken); setTab('My exams'); if (next) beginExam(next); else showNotice('No exam is available to start right now.') }}>Enter exam →</button>}
               </div>
-              {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} token={token} />}
+              {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} token={token} showNotice={showNotice} />}
               {tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
               {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} classes={Array.from(new Set(data.users.filter((account) => account.role === 'Student' && account.classSection).map((account) => account.classSection as string)))} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
               {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} aiReady={data.aiReady} aiRemaining={data.aiRemaining} />}
@@ -539,7 +539,7 @@ function OfflineBilling({ token, showNotice, refresh }: { token: string | null; 
   )
 }
 
-function Overview({ session, data, centre, setTab, setActiveExam, token = null }: { session: Account; data: Data; centre: string; setTab: (tab: Tab) => void; setActiveExam: (exam: Exam) => void; token?: string | null }) {
+function Overview({ session, data, centre, setTab, setActiveExam, token = null, showNotice = () => undefined }: { session: Account; data: Data; centre: string; setTab: (tab: Tab) => void; setActiveExam: (exam: Exam) => void; token?: string | null; showNotice?: (message: string) => void }) {
   const pad = (count: number) => String(count).padStart(2, '0')
   const open = data.exams.filter((exam) => exam.status === 'Scheduled' && !exam.taken)
   const stats = session.role === 'Admin'
@@ -549,7 +549,7 @@ function Overview({ session, data, centre, setTab, setActiveExam, token = null }
       : [[pad(open.length), 'Upcoming exams', 'Ready to take'], [pad(data.exams.filter((exam) => exam.taken).length), 'Submitted', 'Completed exams'], ['--', 'Results', 'Managed by Admin']]
   return (
     <>
-      {session.role === 'Admin' && <ConnectedNow token={token} />}
+      {session.role === 'Admin' && <ConnectedNow token={token} showNotice={showNotice} />}
       <div className="stats-grid">{stats.map(([value, label, note]) => <article className="stat-card" key={label}><span className="stat-value">{value}</span><span className="stat-label">{label}</span><span className="stat-note">{note}</span></article>)}</div>
       <div className="section-heading"><div><p className="eyebrow">At a glance</p><h2>{session.role === 'Admin' ? 'School activity' : 'Upcoming sessions'}</h2></div><button className="text-button" onClick={() => setTab(session.role === 'Admin' ? 'Schedule' : 'My exams')}>View details <span>→</span></button></div>
       <div className="dashboard-grid">
@@ -628,18 +628,24 @@ function ConnectionBadge() {
   )
 }
 
-type ConnectedInfo = { students: number; teachers: number; people: { name: string; role: string; classSection: string; secondsAgo: number; connected: boolean }[] }
+type ConnectedInfo = { students: number; teachers: number; people: { id: string; name: string; role: string; classSection: string; secondsAgo: number; connected: boolean }[] }
 
 // Admin dashboard: who is connected to this server right now, and who just dropped off.
-function ConnectedNow({ token }: { token: string | null }) {
+function ConnectedNow({ token, showNotice }: { token: string | null; showNotice: (message: string) => void }) {
   const [info, setInfo] = useState<ConnectedInfo | null>(null)
+  const reload = useRef<() => Promise<void>>(async () => undefined)
   useEffect(() => {
     let stopped = false
     const load = async () => { try { const result = await api<ConnectedInfo>('/connections', token); if (!stopped) setInfo(result) } catch { /* shown again on the next check */ } }
+    reload.current = load
     void load()
     const interval = window.setInterval(() => void load(), 10000)
     return () => { stopped = true; window.clearInterval(interval) }
   }, [token])
+  const signOut = async (person: { id: string; name: string; role: string }) => {
+    if (!window.confirm(`Sign ${person.name} out now? If they are in the middle of an exam, answers they have not submitted will be lost.`)) return
+    try { await api(`/users/${person.id}/logout`, token, { method: 'POST' }); showNotice(`${person.name} was signed out.`); await reload.current() } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not sign them out.') }
+  }
   if (!info) return null
   const ago = (seconds: number) => seconds < 90 ? `${seconds}s ago` : `${Math.round(seconds / 60)} min ago`
   return (
@@ -647,7 +653,7 @@ function ConnectedNow({ token }: { token: string | null }) {
       <div className="panel-header"><div><h3>Connected now</h3><p>{info.students} student{info.students === 1 ? '' : 's'} and {info.teachers} teacher{info.teachers === 1 ? '' : 's'} connected to this server.</p></div></div>
       {info.people.length === 0
         ? <p className="connected-empty">Nobody is connected right now.</p>
-        : <ul className="connected-list">{info.people.map((person, index) => <li key={index} className={person.connected ? 'on' : 'off'}><span className="conn-dot" /><strong>{person.name}</strong><span>{person.role}{person.classSection ? ` · ${person.classSection}` : ''}</span><em>{person.connected ? 'Connected' : `Disconnected ${ago(person.secondsAgo)}`}</em></li>)}</ul>}
+        : <ul className="connected-list">{info.people.map((person, index) => <li key={index} className={person.connected ? 'on' : 'off'}><span className="conn-dot" /><strong>{person.name}</strong><span>{person.role}{person.classSection ? ` · ${person.classSection}` : ''}</span><em>{person.connected ? 'Connected' : `Disconnected ${ago(person.secondsAgo)}`}</em><button className="text-button signout-button" type="button" onClick={() => void signOut(person)}>Sign out</button></li>)}</ul>}
     </section>
   )
 }

@@ -375,7 +375,7 @@ app.get('/api/connections', authenticate, requireRole('Admin'), (request, respon
     if (now - entry.seen > 10 * 60 * 1000) { presence.delete(userId); continue }
     if (entry.schoolId !== request.user.schoolId || entry.role === 'Admin') continue
     const secondsAgo = Math.round((now - entry.seen) / 1000)
-    people.push({ name: entry.name, role: entry.role, classSection: entry.classSection, secondsAgo, connected: secondsAgo <= 25 })
+    people.push({ id: userId, name: entry.name, role: entry.role, classSection: entry.classSection, secondsAgo, connected: secondsAgo <= 25 })
   }
   people.sort((a, b) => Number(b.connected) - Number(a.connected) || a.role.localeCompare(b.role) || a.name.localeCompare(b.name))
   response.json({
@@ -383,6 +383,15 @@ app.get('/api/connections', authenticate, requireRole('Admin'), (request, respon
     teachers: people.filter((person) => person.connected && person.role === 'Teacher').length,
     people
   })
+})
+
+// Admin signs a teacher or student out from the admin side. Their device returns to the sign-in page within seconds.
+app.post('/api/users/:id/logout', authenticate, requireRole('Admin'), (request, response) => {
+  const target = rows("SELECT id FROM users WHERE id = ? AND school_id = ? AND role != 'Admin' AND deleted = 0", [request.params.id, request.user.schoolId]).at(0)
+  if (!target) return response.status(404).json({ error: 'User not found.' })
+  run('DELETE FROM sessions WHERE user_id = ?', [target.id])
+  presence.delete(target.id)
+  response.json({ ok: true })
 })
 
 app.get('/api/me', authenticate, (request, response) => {

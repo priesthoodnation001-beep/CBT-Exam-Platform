@@ -103,3 +103,5 @@
 .connected-list li.off .conn-dot { background: #b7b7b7; }
 .connected-list li.off em { color: #8a1f1f; }
 .connected-empty { opacity: 0.7; margin: 4px 0 0; }
+
+.signout-button { color: #a12626; font-size: 0.8rem; }
