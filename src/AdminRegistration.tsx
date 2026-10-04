@@ -38,7 +38,7 @@ export default function AdminRegistration({ onBack, onComplete }: Props) {
   return (
     <div className="login-page registration-page">
       <div className="login-art">
-        <div className="brand light"><span className="brand-mark">T</span><span>TIMPRIEST EDU</span></div>
+        <div className="brand light"><img className="brand-logo" src="/logo.svg" alt="" /><span>TIMPRIEST EDU</span></div>
         <div className="art-copy">
           <p className="eyebrow">School registration</p>
           <h1>Start your<br /><em>exam centre.</em></h1>

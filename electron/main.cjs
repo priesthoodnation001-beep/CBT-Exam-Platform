@@ -87,7 +87,7 @@ function normaliseAddress(input) {
   try {
     const url = new URL(text)
     if (!url.hostname) return null
-    if (!url.port) url.port = String(PORT)
+    if (!url.port && url.protocol === 'http:') url.port = String(PORT) // school-network addresses use our port; https links (the online site) keep theirs
     return url.toString()
   } catch { return null }
 }
@@ -127,7 +127,7 @@ function buildMenu() {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1280, height: 800, show: false, autoHideMenuBar: true, title: 'TIMPRIEST EDU',
+    width: 1280, height: 800, show: false, autoHideMenuBar: true, title: 'TIMPRIEST EDU', icon: path.join(ROOT, 'dist', 'logo-512.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false }
   })
   win.maximize()

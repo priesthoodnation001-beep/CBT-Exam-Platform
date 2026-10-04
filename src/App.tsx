@@ -254,7 +254,7 @@ function AppInner() {
     return (
       <div className="login-page">
         <div className="login-art">
-          <div className="brand light"><span className="brand-mark">T</span><span>TIMPRIEST EDU</span></div>
+          <div className="brand light"><img className="brand-logo" src="/logo.svg" alt="" /><span>TIMPRIEST EDU</span></div>
           <div className="art-copy">
             <p className="eyebrow">Examination platform</p>
             <h1>Every learner.<br /><em>One fair chance.</em></h1>
@@ -305,7 +305,7 @@ function AppInner() {
   return (
     <div className={menuOpen ? 'app-shell menu-open' : 'app-shell'}>
       <aside className="sidebar">
-        <div className="brand"><span className="brand-mark">T</span><span>TIMPRIEST EDU</span></div>
+        <div className="brand"><img className="brand-logo" src="/logo.svg" alt="" /><span>TIMPRIEST EDU</span></div>
         <div className="centre-switcher"><span className="status-dot" /><span><strong>{centre}</strong><small>{session.role} portal</small></span></div>
         <p className="nav-label">{session.role} portal</p>
         <nav>
