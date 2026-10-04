@@ -17,7 +17,7 @@ type Role = 'Admin' | 'Teacher' | 'Student'
 type EntryPage = 'home' | 'login' | 'register'
 type Tab = 'Overview' | 'Accounts' | 'Schedule' | 'Approvals' | 'Questions' | 'My exams' | 'Results' | 'Billing' | 'Profile'
 type Account = { id: string; role: Role; name: string; username?: string; studentId?: string; classSection?: string; schoolName?: string; schoolSlug?: string }
-type Exam = { id: string; title: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number; taken?: number }
+type Exam = { id: string; title: string; classSection?: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number; taken?: number }
 type Question = { id: string; examId?: string; subject: string; text: string; options: string[]; answer?: number }
 type Result = { id: string; exam_title: string; student_name: string; student_id: string; score: number; total: number; submitted_at: string }
 type SubjectSetting = { subject: string; duration: number; approved: number; approved_at?: string }
@@ -201,7 +201,7 @@ function App() {
 
   async function deleteAccount(account: Account) { if (!window.confirm(`Delete ${account.name}'s ${account.role.toLowerCase()} account?`)) return; try { await api(`/users/${account.id}`, token, { method: 'DELETE' }); await refresh(); showNotice(`${account.name}'s account was deleted.`) } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not delete account.') } }
 
-  async function addExam(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const values = new FormData(event.currentTarget); try { await api('/exams', token, { method: 'POST', body: JSON.stringify({ title: values.get('title'), subject: values.get('subject'), date: values.get('date'), time: values.get('time'), duration: values.get('duration'), questions: values.get('questions') }) }); setShowExamForm(false); await refresh(); showNotice('Exam schedule published.') } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not schedule exam.') } }
+  async function addExam(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const values = new FormData(event.currentTarget); try { await api('/exams', token, { method: 'POST', body: JSON.stringify({ title: values.get('title'), subject: values.get('subject'), date: values.get('date'), time: values.get('time'), duration: values.get('duration'), questions: values.get('questions'), classSection: values.get('classSection') || '' }) }); setShowExamForm(false); await refresh(); showNotice('Exam schedule published.') } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not schedule exam.') } }
 
   async function deleteExam(exam: Exam) { if (!window.confirm(`Delete the ${exam.status.toLowerCase()} exam "${exam.title}"?`)) return; try { await api(`/exams/${exam.id}`, token, { method: 'DELETE' }); await refresh(); showNotice(`${exam.title} was deleted.`) } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not delete exam.') } }
 
@@ -311,7 +311,7 @@ function App() {
               </div>
               {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} />}
               {tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
-              {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
+              {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} classes={Array.from(new Set(data.users.filter((account) => account.role === 'Student' && account.classSection).map((account) => account.classSection as string)))} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
               {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} aiReady={data.aiReady} aiRemaining={data.aiRemaining} />}
               {tab === 'My exams' && <ExamList exams={data.exams} student={isStudent} centre={centre} start={(exam) => { beginExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}
               {tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} approve={approveSubject} deleteSubject={deleteSubject} />}

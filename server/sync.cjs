@@ -22,6 +22,7 @@ module.exports = function createSync({ rows, exec, persist }) {
       try { exec(`ALTER TABLE ${table} ADD COLUMN updated_at TEXT`) } catch { /* column already exists */ }
       exec(`UPDATE ${table} SET updated_at = ? WHERE updated_at IS NULL`, [new Date().toISOString()])
     }
+    try { exec('ALTER TABLE exams ADD COLUMN class_section TEXT') } catch { /* column already exists */ }
     exec('CREATE TABLE IF NOT EXISTS tombstones (school_id TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, deleted_at TEXT NOT NULL, PRIMARY KEY (school_id, kind, key))')
     const where = { users: 'id = NEW.id', exams: 'id = NEW.id', questions: 'id = NEW.id', subject_settings: 'school_id = NEW.school_id AND subject = NEW.subject' }
     for (const [table, match] of Object.entries(where)) {
@@ -42,7 +43,7 @@ module.exports = function createSync({ rows, exec, persist }) {
     const after = since || ''
     return {
       users: rows(`SELECT id, role, name, username, password_hash AS passwordHash, student_id AS studentId, class_section AS classSection, deleted, updated_at AS updatedAt FROM users WHERE school_id = ? AND role IN ${SYNCED_ROLES} AND updated_at >= ?`, [schoolId, after]),
-      exams: rows('SELECT id, title, subject, date, time, duration, questions, status, updated_at AS updatedAt FROM exams WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
+      exams: rows('SELECT id, title, subject, date, time, duration, questions, status, class_section AS classSection, updated_at AS updatedAt FROM exams WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       subjects: rows('SELECT subject, duration, approved, approved_at AS approvedAt, updated_at AS updatedAt FROM subject_settings WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       questions: rows('SELECT id, exam_id AS examId, subject, text, options, answer, created_at AS createdAt, updated_at AS updatedAt FROM questions WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       submissions: rows('SELECT id, exam_id AS examId, student_id AS studentId, score, total, submitted_at AS submittedAt FROM submissions WHERE school_id = ? AND submitted_at >= ?', [schoolId, after]),
@@ -124,13 +125,13 @@ module.exports = function createSync({ rows, exec, persist }) {
         const existing = rows('SELECT updated_at FROM exams WHERE id = ? AND school_id = ?', [exam.id, schoolId]).at(0)
         if (existing) {
           if (updatedAt > existing.updated_at) {
-            exec('UPDATE exams SET title = ?, subject = ?, date = ?, time = ?, duration = ?, questions = ?, status = ?, updated_at = ? WHERE id = ? AND school_id = ?', [text(exam.title, 300), text(exam.subject, 100), text(exam.date, 50), text(exam.time, 50), number(exam.duration, 90), number(exam.questions), text(exam.status, 30), updatedAt, exam.id, schoolId])
+            exec('UPDATE exams SET title = ?, subject = ?, date = ?, time = ?, duration = ?, questions = ?, status = ?, class_section = ?, updated_at = ? WHERE id = ? AND school_id = ?', [text(exam.title, 300), text(exam.subject, 100), text(exam.date, 50), text(exam.time, 50), number(exam.duration, 90), number(exam.questions), text(exam.status, 30), text(exam.classSection, 200), updatedAt, exam.id, schoolId])
             stats.applied += 1
           } else stats.skipped += 1
           continue
         }
         if (tombstoneAfter('exam', exam.id, updatedAt)) { stats.skipped += 1; continue }
-        exec('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [exam.id, schoolId, text(exam.title, 300), text(exam.subject, 100), text(exam.date, 50), text(exam.time, 50), number(exam.duration, 90), number(exam.questions), text(exam.status, 30), updatedAt])
+        exec('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [exam.id, schoolId, text(exam.title, 300), text(exam.subject, 100), text(exam.date, 50), text(exam.time, 50), number(exam.duration, 90), number(exam.questions), text(exam.status, 30), text(exam.classSection, 200), updatedAt])
         stats.applied += 1
       }
 

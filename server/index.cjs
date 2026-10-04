@@ -103,6 +103,17 @@ function publicQuestion(question, includeAnswer = false) {
   return result
 }
 
+// An exam can be limited to one or more classes, e.g. "JSS 1, JSS 2". Blank means every class.
+function classMatches(examClasses, studentClass) {
+  const wanted = String(examClasses || '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean)
+  if (!wanted.length) return true
+  return wanted.includes(String(studentClass || '').trim().toLowerCase())
+}
+
+function studentClassOf(userId) {
+  return rows('SELECT class_section FROM users WHERE id = ?', [userId]).at(0)?.class_section || ''
+}
+
 function loadUser(id) {
   return rows(
     'SELECT users.*, schools.name AS school_name, schools.slug AS school_slug FROM users JOIN schools ON schools.id = users.school_id WHERE users.id = ? AND users.deleted = 0',
@@ -377,8 +388,8 @@ app.get('/api/data', authenticate, (request, response) => {
     ? rows('SELECT * FROM users WHERE school_id = ? AND deleted = 0 AND role != \'Admin\' ORDER BY name', [schoolId]).map(publicUser)
     : []
   const subjects = rows('SELECT subject, duration, approved, approved_at FROM subject_settings WHERE school_id = ? ORDER BY subject', [schoolId])
-  const exams = rows(
-    `SELECT exams.id, exams.title, exams.subject, exams.date, exams.time, exams.duration, exams.questions, exams.status,
+  const allExams = rows(
+    `SELECT exams.id, exams.title, exams.subject, exams.date, exams.time, exams.duration, exams.questions, exams.status, exams.class_section AS classSection,
       COALESCE(subject_settings.duration, 30) AS subject_duration,
       COALESCE(subject_settings.approved, 0) AS subject_approved,
       (SELECT COUNT(*) FROM submissions WHERE submissions.exam_id = exams.id AND submissions.student_id = ?) AS taken
@@ -386,6 +397,8 @@ app.get('/api/data', authenticate, (request, response) => {
      WHERE exams.school_id = ? ORDER BY exams.date, exams.time`,
     [request.user.id, schoolId]
   )
+  const myClass = isStudent ? studentClassOf(request.user.id) : ''
+  const exams = isStudent ? allExams.filter((exam) => classMatches(exam.classSection, myClass)) : allExams // students only see exams for their own class
   const questionSql = isStudent
     ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? ORDER BY questions.created_at'
     : 'SELECT id, exam_id, subject, text, options, answer FROM questions WHERE school_id = ? ORDER BY created_at'
@@ -421,10 +434,10 @@ app.delete('/api/users/:id', authenticate, requireRole('Admin'), (request, respo
 })
 
 app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) => {
-  const { title, subject, date, time, duration, questions } = request.body || {}
+  const { title, subject, date, time, duration, questions, classSection = '' } = request.body || {}
   if (!title || !subject || !date || !time) return response.status(400).json({ error: 'Title, subject, date, and time are required.' })
   const id = crypto.randomUUID()
-  run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\')', [id, request.user.schoolId, title, subject, date, time, Number(duration) || 90, Number(questions) || 0])
+  run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?)', [id, request.user.schoolId, title, subject, date, time, Number(duration) || 90, Number(questions) || 0, String(classSection || '').trim().slice(0, 200)])
   response.status(201).json({ exam: rows('SELECT * FROM exams WHERE id = ?', [id])[0] })
 })
 
@@ -477,6 +490,7 @@ app.post('/api/submissions', authenticate, requireRole('Student'), (request, res
   const schoolId = request.user.schoolId
   const exam = rows('SELECT exams.* FROM exams JOIN subject_settings ON subject_settings.subject = exams.subject AND subject_settings.school_id = exams.school_id AND subject_settings.approved = 1 WHERE exams.id = ? AND exams.school_id = ? AND exams.status = \'Scheduled\'', [examId, schoolId]).at(0)
   if (!exam) return response.status(404).json({ error: 'Exam is not available.' })
+  if (!classMatches(exam.class_section, studentClassOf(request.user.id))) return response.status(403).json({ error: 'This exam is not for your class.' })
   if (rows('SELECT id FROM submissions WHERE exam_id = ? AND student_id = ?', [examId, request.user.id]).length) return response.status(409).json({ error: 'You have already submitted this exam.' })
   const examQuestions = rows('SELECT questions.id, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? AND (questions.exam_id = ? OR (questions.exam_id IS NULL AND questions.subject = ?))', [schoolId, examId, exam.subject])
   const total = examQuestions.length
