@@ -105,3 +105,9 @@
 .connected-empty { opacity: 0.7; margin: 4px 0 0; }
 
 .signout-button { color: #a12626; font-size: 0.8rem; }
+
+/* saved question drafts */
+.draft-box { border: 1px solid #9bb59f; background: #f1f7f2; border-radius: 12px; padding: 14px; margin-bottom: 16px; display: grid; gap: 8px; }
+.draft-box p { margin: 0; font-size: 0.9rem; opacity: 0.85; }
+.draft-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 0.9rem; }
+.draft-row > span { flex: 1 1 220px; }

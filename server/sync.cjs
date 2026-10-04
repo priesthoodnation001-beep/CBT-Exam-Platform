@@ -7,6 +7,8 @@
 //  - Accounts (admin, teachers, students) sync, so one registration works on both sides. Credits are NOT synced: each side keeps its own balance.
 //  - Clock differences between the two computers are corrected using the skew passed to applyChanges.
 
+const crypto = require('crypto')
+
 const SYNCED_ROLES = "('Admin', 'Teacher', 'Student')"
 const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 const MAX_ROWS = 50000
@@ -46,13 +48,14 @@ module.exports = function createSync({ rows, exec, persist }) {
       exams: rows('SELECT id, title, subject, date, time, duration, questions, status, class_section AS classSection, updated_at AS updatedAt FROM exams WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       subjects: rows('SELECT subject, duration, approved, approved_at AS approvedAt, updated_at AS updatedAt FROM subject_settings WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       questions: rows('SELECT id, exam_id AS examId, subject, text, options, answer, created_at AS createdAt, updated_at AS updatedAt FROM questions WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
+      drafts: rows('SELECT id, user_id AS userId, subject, duration, data, updated_at AS updatedAt FROM question_drafts WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       submissions: rows('SELECT id, exam_id AS examId, student_id AS studentId, score, total, submitted_at AS submittedAt FROM submissions WHERE school_id = ? AND submitted_at >= ?', [schoolId, after]),
       tombstones: rows('SELECT kind, key, deleted_at AS deletedAt FROM tombstones WHERE school_id = ? AND deleted_at >= ?', [schoolId, after])
     }
   }
 
   function count(changes) {
-    return ['users', 'exams', 'subjects', 'questions', 'submissions', 'tombstones'].reduce((sum, name) => sum + (changes[name]?.length || 0), 0)
+    return ['users', 'exams', 'subjects', 'questions', 'drafts', 'submissions', 'tombstones'].reduce((sum, name) => sum + (changes[name]?.length || 0), 0)
   }
 
   // Merge changes from the other side into this school. skewMs is added to the other side's times.
@@ -75,7 +78,7 @@ module.exports = function createSync({ rows, exec, persist }) {
         const deletedAt = shift(tomb.deletedAt)
         const kind = text(tomb.kind, 20)
         const key = text(tomb.key, 300)
-        if (!deletedAt || !['exam', 'subject'].includes(kind) || !key) { stats.skipped += 1; continue }
+        if (!deletedAt || !['exam', 'subject', 'draft'].includes(kind) || !key) { stats.skipped += 1; continue }
         const known = rows('SELECT deleted_at FROM tombstones WHERE school_id = ? AND kind = ? AND key = ?', [schoolId, kind, key]).at(0)
         if (!known || known.deleted_at < deletedAt) exec('INSERT INTO tombstones (school_id, kind, key, deleted_at) VALUES (?, ?, ?, ?) ON CONFLICT(school_id, kind, key) DO UPDATE SET deleted_at = excluded.deleted_at', [schoolId, kind, key, deletedAt])
         if (kind === 'exam') {
@@ -85,6 +88,9 @@ module.exports = function createSync({ rows, exec, persist }) {
             exec('DELETE FROM questions WHERE exam_id = ? AND school_id = ?', [key, schoolId])
             exec('DELETE FROM exams WHERE id = ? AND school_id = ?', [key, schoolId])
           }
+        } else if (kind === 'draft') {
+          const split = key.indexOf('|')
+          if (split > 0) exec('DELETE FROM question_drafts WHERE school_id = ? AND user_id = ? AND subject = ? AND updated_at <= ?', [schoolId, key.slice(0, split), key.slice(split + 1), deletedAt])
         } else {
           exec('DELETE FROM questions WHERE school_id = ? AND subject = ? AND updated_at <= ?', [schoolId, key, deletedAt])
           exec('DELETE FROM subject_settings WHERE school_id = ? AND subject = ? AND updated_at <= ?', [schoolId, key, deletedAt])
@@ -175,7 +181,32 @@ module.exports = function createSync({ rows, exec, persist }) {
         stats.applied += 1
       }
 
-      // 6. results are only added, never changed
+      // 6. saved question drafts (one per teacher and subject; the newest save wins)
+      for (const draft of list(incoming?.drafts)) {
+        const updatedAt = shift(draft.updatedAt)
+        const userId = text(draft.userId, 100)
+        const subject = text(draft.subject, 80)
+        const data = text(draft.data, 2000000)
+        let validData = false
+        try { validData = Array.isArray(JSON.parse(data)) } catch { /* not valid */ }
+        if (!updatedAt || !userId || !subject || !validData) { stats.skipped += 1; continue }
+        if (!rows('SELECT id FROM users WHERE id = ? AND school_id = ?', [userId, schoolId]).length) { stats.skipped += 1; continue }
+        const existing = rows('SELECT id, updated_at FROM question_drafts WHERE user_id = ? AND subject = ?', [userId, subject]).at(0)
+        const minutes = Math.min(30, Math.max(1, number(draft.duration, 30)))
+        if (existing) {
+          if (updatedAt > existing.updated_at) {
+            exec('UPDATE question_drafts SET duration = ?, data = ?, updated_at = ? WHERE id = ?', [minutes, data, updatedAt, existing.id])
+            stats.applied += 1
+          } else stats.skipped += 1
+          continue
+        }
+        if (tombstoneAfter('draft', `${userId}|${subject}`, updatedAt)) { stats.skipped += 1; continue }
+        const idTaken = rows('SELECT id FROM question_drafts WHERE id = ?', [text(draft.id, 100)]).length
+        exec('INSERT INTO question_drafts (id, school_id, user_id, subject, duration, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [idTaken || !text(draft.id, 100) ? crypto.randomUUID() : text(draft.id, 100), schoolId, userId, subject, minutes, data, updatedAt])
+        stats.applied += 1
+      }
+
+      // 7. results are only added, never changed
       for (const result of list(incoming?.submissions)) {
         const submittedAt = shift(result.submittedAt)
         if (!submittedAt || !text(result.id, 100)) { stats.skipped += 1; continue }

@@ -484,6 +484,47 @@ app.delete('/api/exams/:id', authenticate, requireRole('Admin'), (request, respo
   response.sendStatus(204)
 })
 
+/* ---------- teacher drafts: save unfinished questions and carry on another day ---------- */
+
+// Drafts may be unfinished, so blanks are allowed here (they are checked again at Submit).
+function cleanDraftQuestions(input) {
+  if (!Array.isArray(input)) return []
+  return input.slice(0, 500).map((item) => {
+    const options = Array.isArray(item?.options) ? item.options.slice(0, 4).map((option) => String(option ?? '').slice(0, 300)) : []
+    while (options.length < 4) options.push('')
+    const answer = Number(item?.answer)
+    return { text: String(item?.text ?? '').slice(0, 2000), options, answer: Number.isInteger(answer) && answer >= 0 && answer <= 3 ? answer : 0 }
+  }).filter((item) => item.text.trim() || item.options.some((option) => option.trim()))
+}
+
+app.get('/api/drafts', authenticate, requireRole('Teacher'), (request, response) => {
+  const drafts = rows('SELECT id, subject, duration, data, updated_at FROM question_drafts WHERE user_id = ? ORDER BY updated_at DESC', [request.user.id])
+    .map((row) => ({ id: row.id, subject: row.subject, duration: row.duration, questions: JSON.parse(row.data), updatedAt: row.updated_at }))
+  response.json({ drafts })
+})
+
+app.put('/api/drafts', authenticate, requireRole('Teacher'), (request, response) => {
+  const subject = String(request.body?.subject || '').trim().slice(0, 80)
+  const minutes = Math.floor(Number(request.body?.duration))
+  const questions = cleanDraftQuestions(request.body?.questions)
+  if (!subject) return response.status(400).json({ error: 'Enter the subject name first.' })
+  if (!questions.length) return response.status(400).json({ error: 'Write at least one question before saving.' })
+  const id = crypto.randomUUID()
+  run('INSERT INTO question_drafts (id, school_id, user_id, subject, duration, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, subject) DO UPDATE SET duration = excluded.duration, data = excluded.data, updated_at = excluded.updated_at',
+    [id, request.user.schoolId, request.user.id, subject, minutes >= 1 && minutes <= 30 ? minutes : 30, JSON.stringify(questions), new Date().toISOString()])
+  const saved = rows('SELECT id, subject, duration, updated_at FROM question_drafts WHERE user_id = ? AND subject = ?', [request.user.id, subject]).at(0)
+  response.json({ draft: { id: saved.id, subject: saved.subject, duration: saved.duration, count: questions.length, updatedAt: saved.updated_at } })
+})
+
+app.delete('/api/drafts/:id', authenticate, requireRole('Teacher'), (request, response) => {
+  const draft = rows('SELECT user_id, subject FROM question_drafts WHERE id = ? AND user_id = ?', [request.params.id, request.user.id]).at(0)
+  if (draft) {
+    run('DELETE FROM question_drafts WHERE id = ? AND user_id = ?', [request.params.id, request.user.id])
+    sync.recordTombstone(request.user.schoolId, 'draft', `${draft.user_id}|${draft.subject}`) // so the deletion reaches the other side
+  }
+  response.sendStatus(204)
+})
+
 app.post('/api/subjects', authenticate, requireRole('Teacher'), (request, response) => {
   const { subject, duration } = request.body || {}
   const minutes = Number(duration)
@@ -1022,6 +1063,7 @@ async function start() {
   db.run('CREATE TABLE IF NOT EXISTS credit_ledger (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, change INTEGER NOT NULL, reason TEXT NOT NULL, reference TEXT, created_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS payments (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, amount_kobo INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS question_drafts (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, user_id TEXT NOT NULL, subject TEXT NOT NULL, duration INTEGER NOT NULL DEFAULT 30, data TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (user_id, subject))')
   db.run('CREATE TABLE IF NOT EXISTS pending_purchases (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS redeemed_vouchers (reference TEXT PRIMARY KEY, credits INTEGER NOT NULL, redeemed_at TEXT NOT NULL)')
   try { db.run("ALTER TABLE payments ADD COLUMN target TEXT NOT NULL DEFAULT 'online'") } catch { /* column already exists */ }
