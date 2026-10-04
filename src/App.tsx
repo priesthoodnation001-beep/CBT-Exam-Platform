@@ -438,7 +438,7 @@ function Billing({ token, showNotice, refresh }: { token: string | null; showNot
   )
 }
 
-type OfflineInfo = { credits: number; pricePerCredit: number; minCredits: number; maxCredits: number; linked: boolean; onlineSlug: string; pending: { reference: string; credits: number }[]; ledger: { change: number; reason: string; created_at: string }[] }
+type OfflineInfo = { credits: number; pricePerCredit: number; minCredits: number; maxCredits: number; linked: boolean; onlineSlug: string; lastSync: string; pending: { reference: string; credits: number }[]; ledger: { change: number; reason: string; created_at: string }[] }
 
 function OfflineBilling({ token, showNotice, refresh }: { token: string | null; showNotice: (message: string) => void; refresh: () => Promise<void> | void }) {
   const [info, setInfo] = useState<OfflineInfo | null>(null)
@@ -453,7 +453,11 @@ function OfflineBilling({ token, showNotice, refresh }: { token: string | null; 
     try { setInfo(await api<OfflineInfo>('/offline/status', token)) } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not load billing.') }
   }
 
-  useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    void load()
+    const timer = window.setInterval(() => void load(), 20000) // pick up credits that arrive in the background
+    return () => window.clearInterval(timer)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function post<T>(path: string, body: object): Promise<T> {
     return api<T>(path, token, { method: 'POST', body: JSON.stringify(body) })
@@ -467,6 +471,8 @@ function OfflineBilling({ token, showNotice, refresh }: { token: string | null; 
   const link = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void run(async () => { await post('/offline/link', { slug, username, password }); setPassword(''); await load(); showNotice('Online account linked.') }) }
   const buy = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void run(async () => { const result = await post<{ authorizationUrl: string }>('/offline/checkout', { credits }); window.open(result.authorizationUrl, '_blank'); await load(); showNotice('Finish the payment in your browser, then come back and tap "I have paid".') }) }
   const redeem = () => void run(async () => { const result = await post<{ added: number; waiting: number }>('/offline/redeem', {}); await refresh(); await load(); showNotice(result.added > 0 ? `${result.added} credits added.` : result.waiting > 0 ? 'Payment not confirmed yet. Wait a moment and try again.' : 'No payments are waiting.') })
+  const claim = () => void run(async () => { const result = await post<{ added: number }>('/offline/claim', {}); await refresh(); await load(); showNotice(result.added > 0 ? `${result.added} credits added from the website.` : 'No new credits on the website.') })
+  const syncNow = () => void run(async () => { const result = await post<{ sent: number; received: number; conflicts: number; creditsAdded?: number }>('/offline/sync', {}); await refresh(); await load(); showNotice(`Sync finished. Sent ${result.sent}, received ${result.received}.${result.creditsAdded ? ` ${result.creditsAdded} credits added.` : ''}${result.conflicts ? ` ${result.conflicts} duplicate account(s) were skipped.` : ''}`) })
   const unlink = () => void run(async () => { await post('/offline/unlink', {}); await load() })
 
   if (!info) return <p>{error || 'Loading billing...'}</p>
@@ -494,8 +500,14 @@ function OfflineBilling({ token, showNotice, refresh }: { token: string | null; 
           </>
         ) : (
           <>
+            <h3>Sync with the website</h3>
+            <p>Linked to <strong>{info.onlineSlug}</strong>. Syncing brings accounts, questions, exams and approvals from the website to this computer, and sends yours back, including exam results. It needs internet while it runs. {info.lastSync ? `Last synced ${new Date(info.lastSync).toLocaleString()}.` : 'Not synced yet.'}</p>
+            <button className="primary-button" type="button" onClick={syncNow} disabled={busy}>{busy ? 'Please wait...' : 'Sync now'}</button>
+            <h3>Credits bought on the website</h3>
+            <p>Credits you buy on the website are added to this computer automatically, about every 5 minutes while it has internet. You can also check right now.</p>
+            <button className="primary-button" type="button" onClick={claim} disabled={busy}>{busy ? 'Please wait...' : 'Check for new credits'}</button>
             <h3>Buy credits</h3>
-            <p>Linked to <strong>{info.onlineSlug}</strong>. This computer must be connected to the internet while you pay. Buy {info.minCredits} to {info.maxCredits.toLocaleString()} credits.</p>
+            <p> This computer must be connected to the internet while you pay. Buy {info.minCredits} to {info.maxCredits.toLocaleString()} credits.</p>
             <form className="profile-form" onSubmit={buy}>
               <label>Number of credits<input type="number" min={info.minCredits} max={info.maxCredits} value={credits} onChange={(event) => setCredits(Number(event.target.value))} required /></label>
               <p><strong>Total: ₦{total.toLocaleString()}</strong></p>

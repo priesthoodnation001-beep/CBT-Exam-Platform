@@ -4,10 +4,10 @@
 //  - Every row that can change carries an updated_at time. The newest edit wins ("last write wins").
 //  - Deleted exams and subjects leave a small "tombstone" so the deletion reaches the other side.
 //  - Exam results (submissions) are only ever added, never edited.
-//  - Admin accounts and credits are NOT synced: each side keeps its own.
+//  - Accounts (admin, teachers, students) sync, so one registration works on both sides. Credits are NOT synced: each side keeps its own balance.
 //  - Clock differences between the two computers are corrected using the skew passed to applyChanges.
 
-const SYNCED_ROLES = "('Teacher', 'Student')"
+const SYNCED_ROLES = "('Admin', 'Teacher', 'Student')"
 const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 const MAX_ROWS = 50000
 
@@ -91,29 +91,29 @@ module.exports = function createSync({ rows, exec, persist }) {
         stats.applied += 1
       }
 
-      // 2. accounts (teachers and students only)
+      // 2. accounts (admin, teachers and students)
       for (const user of list(incoming?.users)) {
         const updatedAt = shift(user.updatedAt)
         const role = text(user.role, 20)
-        if (!updatedAt || !['Teacher', 'Student'].includes(role) || !text(user.id, 100) || !text(user.name, 200)) { stats.skipped += 1; continue }
+        if (!updatedAt || !['Admin', 'Teacher', 'Student'].includes(role) || !text(user.id, 100) || !text(user.name, 200)) { stats.skipped += 1; continue }
         const existing = rows('SELECT updated_at FROM users WHERE id = ? AND school_id = ?', [user.id, schoolId]).at(0)
         const deleted = number(user.deleted) ? 1 : 0
-        const username = role === 'Teacher' ? text(user.username, 100) : null
+        const username = role !== 'Student' ? text(user.username, 100) : null
         const studentId = role === 'Student' ? text(user.studentId, 100).toUpperCase() : null
         if (existing) {
           if (updatedAt > existing.updated_at) {
-            exec('UPDATE users SET name = ?, username = ?, password_hash = ?, student_id = ?, class_section = ?, deleted = ?, updated_at = ? WHERE id = ? AND school_id = ?', [text(user.name, 200), username, role === 'Teacher' ? text(user.passwordHash, 500) : null, studentId, role === 'Student' ? text(user.classSection, 100) : null, deleted, updatedAt, user.id, schoolId])
+            exec('UPDATE users SET name = ?, username = ?, password_hash = ?, student_id = ?, class_section = ?, deleted = ?, updated_at = ? WHERE id = ? AND school_id = ?', [text(user.name, 200), username, role !== 'Student' ? text(user.passwordHash, 500) : null, studentId, role === 'Student' ? text(user.classSection, 100) : null, deleted, updatedAt, user.id, schoolId])
             stats.applied += 1
           } else stats.skipped += 1
           continue
         }
         if (!deleted) {
-          const clash = role === 'Teacher'
+          const clash = role !== 'Student'
             ? rows('SELECT id FROM users WHERE school_id = ? AND lower(username) = lower(?) AND deleted = 0', [schoolId, username]).length
             : rows('SELECT id FROM users WHERE school_id = ? AND student_id = ? AND deleted = 0', [schoolId, studentId]).length
           if (clash) { stats.conflicts += 1; continue }
         }
-        exec("INSERT INTO users (id, school_id, role, name, username, password_hash, student_id, class_section, deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [user.id, schoolId, role, text(user.name, 200), username, role === 'Teacher' ? text(user.passwordHash, 500) : null, studentId, role === 'Student' ? text(user.classSection, 100) : null, deleted, updatedAt])
+        exec("INSERT INTO users (id, school_id, role, name, username, password_hash, student_id, class_section, deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [user.id, schoolId, role, text(user.name, 200), username, role !== 'Student' ? text(user.passwordHash, 500) : null, studentId, role === 'Student' ? text(user.classSection, 100) : null, deleted, updatedAt])
         stats.applied += 1
       }
 

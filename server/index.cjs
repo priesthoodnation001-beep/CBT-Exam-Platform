@@ -260,13 +260,38 @@ function requireRole(...roles) {
 
 app.get('/api/health', (_request, response) => response.json({ ok: true, database: 'SQLite', name: 'TIMPRIEST EDU' }))
 
-app.get('/api/schools/:slug', (request, response) => {
-  const school = rows('SELECT name, slug FROM schools WHERE slug = ?', [String(request.params.slug).toLowerCase()]).at(0)
-  if (!school) return response.status(404).json({ error: 'School not found.' })
-  response.json(school)
+app.get('/api/schools/:slug', async (request, response) => {
+  const slug = String(request.params.slug).toLowerCase()
+  const school = rows('SELECT name, slug FROM schools WHERE slug = ?', [slug]).at(0)
+  if (school) return response.json(school)
+  if (OFFLINE) {
+    try { // a school registered on the website but not yet on this computer
+      const online = await onlineFetch(`/api/schools/${encodeURIComponent(slug)}`)
+      if (online.ok && online.body?.slug) return response.json({ name: online.body.name, slug: online.body.slug })
+    } catch { /* no internet */ }
+  }
+  response.status(404).json({ error: 'School not found.' })
 })
 
-app.post('/api/register-admin', (request, response) => {
+app.post('/api/register-admin', async (request, response) => {
+  if (OFFLINE) {
+    // On a school computer, registering creates the school on the website too, then brings it here. No second registration.
+    try {
+      const body = request.body || {}
+      const online = await onlineFetch('/api/register-admin', { method: 'POST', body: JSON.stringify(body) })
+      if (!online.ok) return response.status([400, 409].includes(online.status) ? online.status : 502).json({ error: online.body?.error || 'The website could not create the school.' })
+      const login = await onlineFetch('/api/login', { method: 'POST', body: JSON.stringify({ role: 'Admin', identifier: String(body.username || '').trim(), password: String(body.password || ''), schoolSlug: online.body.school.slug }) })
+      if (!login.ok || !login.body?.token) return response.status(502).json({ error: 'The school was created online, but could not be set up here. Sign in on this computer with the same details.' })
+      const provisioned = await provisionFromOnline(login.body.token)
+      if (provisioned.error) return response.status(502).json({ error: provisioned.error })
+      await syncSchool(provisioned.schoolId)
+      return response.status(201).json({ school: online.body.school })
+    } catch (error) {
+      if (error?.message === 'NO_INTERNET') return response.status(503).json({ error: 'Registering a new school needs internet once. Connect this computer to the internet and try again.' })
+      console.error('desktop registration failed', error)
+      return response.status(500).json({ error: 'Could not create the school.' })
+    }
+  }
   const { schoolName, name, username, password, email } = request.body || {}
   if (!schoolName || String(schoolName).trim().length < 2) return response.status(400).json({ error: 'Enter your school name.' })
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) return response.status(400).json({ error: 'Enter a valid email address for payment receipts.' })
@@ -280,27 +305,45 @@ app.post('/api/register-admin', (request, response) => {
   response.status(201).json({ school: { name: String(schoolName).trim(), slug } })
 })
 
-app.post('/api/login', (request, response) => {
+app.post('/api/login', async (request, response) => {
   const { role, identifier = '', password = '', schoolSlug = '' } = request.body || {}
   const id = String(identifier).trim()
   if (!['Admin', 'Teacher', 'Student'].includes(role) || !id) return response.status(400).json({ error: 'Enter your sign-in details.' })
   const key = `${request.ip}|${id.toLowerCase()}`
   if (tooManyAttempts(key)) return response.status(429).json({ error: 'Too many attempts. Please wait a few minutes and try again.' })
-  const school = schoolSlug ? rows('SELECT id FROM schools WHERE slug = ?', [String(schoolSlug).toLowerCase()]).at(0) : undefined
-  let user
-  if (role === 'Student') {
-    if (!schoolSlug) return response.status(400).json({ error: 'Students must sign in from their school\'s own link.' })
-    if (school) user = rows('SELECT * FROM users WHERE role = \'Student\' AND school_id = ? AND lower(student_id) = lower(?) AND deleted = 0', [school.id, id]).at(0)
-  } else {
-    user = rows('SELECT * FROM users WHERE role = ? AND lower(username) = lower(?) AND deleted = 0', [role, id]).at(0)
-    if (user && schoolSlug && (!school || school.id !== user.school_id)) user = undefined
+  if (role === 'Student' && !schoolSlug) return response.status(400).json({ error: 'Students must sign in from their school\'s own link.' })
+
+  const lookup = () => {
+    const school = schoolSlug ? rows('SELECT id FROM schools WHERE slug = ?', [String(schoolSlug).toLowerCase()]).at(0) : undefined
+    let found
+    if (role === 'Student') {
+      if (school) found = rows('SELECT * FROM users WHERE role = \'Student\' AND school_id = ? AND lower(student_id) = lower(?) AND deleted = 0', [school.id, id]).at(0)
+    } else {
+      found = rows('SELECT * FROM users WHERE role = ? AND lower(username) = lower(?) AND deleted = 0', [role, id]).at(0)
+      if (found && schoolSlug && (!school || school.id !== found.school_id)) found = undefined
+    }
+    return found
   }
-  const valid = user && (role === 'Student' ? true : verifyPassword(String(password), user.password_hash))
-  if (!valid) {
+  const accepts = (found) => Boolean(found) && (role === 'Student' ? true : verifyPassword(String(password), found.password_hash))
+
+  let user = lookup()
+  let notice = ''
+  if (!accepts(user) && OFFLINE) {
+    try {
+      const outcome = await offlineLoginFallback({ role, id, password: String(password), schoolSlug: String(schoolSlug), lookup, hadUser: Boolean(user) })
+      if (outcome.user) user = outcome.user
+      if (outcome.notice) notice = outcome.notice
+    } catch (error) { console.error('offline sign-in fallback failed', error?.message || error) }
+  }
+  if (!accepts(user)) {
     recordFailure(key)
-    return response.status(401).json({ error: role === 'Student' ? 'Student ID not found.' : 'Username or password is incorrect.' })
+    return response.status(401).json({ error: notice || (role === 'Student' ? 'Student ID not found.' : 'Username or password is incorrect.') })
   }
   attempts.delete(key)
+  if (OFFLINE && role === 'Admin') {
+    const slug = rows('SELECT slug FROM schools WHERE id = ?', [user.school_id]).at(0)?.slug
+    if (slug) void refreshOnlineLink(user.school_id, id, String(password), slug)
+  }
   const token = createSession(user.id)
   response.json({ token, user: publicUser(loadUser(user.id)) })
 })
@@ -613,6 +656,13 @@ app.post('/api/billing/transfer', authenticate, requireRole('Admin'), (request, 
   }
 })
 
+// Online server: the school's identity, so a school computer can create the same school.
+app.get('/api/provision', authenticate, requireRole('Admin'), (request, response) => {
+  const school = rows('SELECT id, name, slug, email FROM schools WHERE id = ?', [request.user.schoolId]).at(0)
+  if (!school) return response.status(404).json({ error: 'School not found.' })
+  response.json({ school })
+})
+
 /* ---------- two-way sync (online server side) ---------- */
 
 app.post('/api/sync', authenticate, requireRole('Admin'), (request, response) => {
@@ -675,28 +725,111 @@ app.post('/api/offline/link', authenticate, requireRole('Admin'), offlineOnly, a
   } catch (error) { offlineFailure(response, error, 'Could not link the online account.') }
 })
 
+// One full sync with the website for a school on this computer: send ours, take theirs, pick up credits.
+async function syncSchool(schoolId) {
+  const token = getSetting(schoolId, 'online_token')
+  if (!token) return { error: 'Link your online account first.', status: 409 }
+  const started = new Date().toISOString()
+  const outgoing = sync.collectChanges(schoolId, getSetting(schoolId, 'last_push'))
+  const result = await onlineFetch('/api/sync', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ clientTime: started, serverCursor: getSetting(schoolId, 'server_cursor'), changes: outgoing })
+  })
+  if (result.status === 401) { dropSettings(schoolId); return { error: 'Your online sign-in expired. Sign in again with internet to reconnect.', status: 409 } }
+  if (!result.ok || !result.body?.serverTime) return { error: result.body?.error || 'The website could not sync right now.', status: 502 }
+  const skew = Date.parse(result.body.serverTime) - Date.parse(started) // how far this computer's clock is behind the website's
+  const stats = sync.applyChanges(schoolId, result.body.changes, -skew)
+  putSetting(schoolId, 'last_push', started)
+  putSetting(schoolId, 'server_cursor', result.body.serverTime)
+  putSetting(schoolId, 'last_sync_done', new Date().toISOString())
+  let creditsAdded = 0
+  try { const claimed = await claimWebsiteCredits(schoolId); creditsAdded = claimed.added || 0 } catch { /* credits are retried automatically */ }
+  return { sent: sync.count(outgoing), received: stats.applied, conflicts: stats.conflicts + Number(result.body.stats?.conflicts || 0), creditsAdded }
+}
+
+// Creates this computer's copy of a school that was registered on the website (same id, same link name).
+async function provisionFromOnline(token) {
+  const info = await onlineFetch('/api/provision', { headers: { Authorization: `Bearer ${token}` } })
+  const online = info.body?.school
+  if (!info.ok || !online?.id) return { error: info.body?.error || 'Could not read the school from the website.' }
+  const existing = rows('SELECT id FROM schools WHERE slug = ?', [online.slug]).at(0)
+  if (existing && existing.id !== online.id) return { error: 'A different school with this link already exists on this computer. Clear this computer\'s data or use another school name.' }
+  if (!existing) run('INSERT INTO schools (id, name, slug, created_at, email, credits) VALUES (?, ?, ?, ?, ?, 0)', [online.id, online.name, online.slug, new Date().toISOString(), online.email || null])
+  putSetting(online.id, 'online_token', token)
+  putSetting(online.id, 'online_slug', online.slug)
+  putSetting(online.id, 'online_school_id', online.id)
+  return { schoolId: online.id }
+}
+
+// Keeps the website connection alive: whenever an admin signs in here with internet, renew it silently.
+async function refreshOnlineLink(schoolId, username, password, slug) {
+  try {
+    if (getSetting(schoolId, 'online_token')) return
+    const login = await onlineFetch('/api/login', { method: 'POST', body: JSON.stringify({ role: 'Admin', identifier: username, password, schoolSlug: slug }) })
+    if (!login.ok || !login.body?.token) return
+    const info = await onlineFetch('/api/provision', { headers: { Authorization: `Bearer ${login.body.token}` } })
+    if (info.ok && info.body?.school?.id === schoolId) {
+      putSetting(schoolId, 'online_token', login.body.token)
+      putSetting(schoolId, 'online_slug', slug)
+      putSetting(schoolId, 'online_school_id', schoolId)
+    }
+  } catch { /* no internet: try again at the next admin sign-in */ }
+}
+
+const lastQuickSync = new Map()
+
+// Sign-in could not find this account here. Ask the website, so nobody registers twice.
+async function offlineLoginFallback({ role, id, password, schoolSlug, lookup, hadUser }) {
+  const matches = (found) => Boolean(found) && (role === 'Student' ? true : verifyPassword(password, found.password_hash))
+  // 1. schools already on this computer: bring in anything new from the website, then look again
+  const localSchool = schoolSlug ? rows('SELECT id FROM schools WHERE slug = ?', [schoolSlug.toLowerCase()]).at(0) : undefined
+  const candidates = localSchool ? [localSchool] : (schoolSlug ? [] : rows('SELECT id FROM schools'))
+  for (const school of candidates) {
+    if (!getSetting(school.id, 'online_token')) continue
+    if (Date.now() - (lastQuickSync.get(school.id) || 0) < 15000) continue
+    lastQuickSync.set(school.id, Date.now())
+    try { await syncSchool(school.id) } catch { /* no internet */ }
+  }
+  let found = lookup()
+  if (matches(found)) return { user: found }
+  // 2. an admin whose school is not on this computer yet: set the school up from the website
+  if (role === 'Admin' && !hadUser && !found) {
+    let online
+    try {
+      online = await onlineFetch('/api/login', { method: 'POST', body: JSON.stringify({ role: 'Admin', identifier: id, password, schoolSlug }) })
+    } catch (error) {
+      if (error?.message === 'NO_INTERNET') return { notice: 'This school is not on this computer yet. Connect to the internet and sign in once to set it up.' }
+      throw error
+    }
+    if (!online.ok || !online.body?.token) return {}
+    const provisioned = await provisionFromOnline(online.body.token)
+    if (provisioned.error) return { notice: provisioned.error }
+    try { await syncSchool(provisioned.schoolId) } catch { return { notice: 'The school was set up, but the connection dropped while loading it. Sign in again.' } }
+    found = lookup()
+    return matches(found) ? { user: found } : { notice: 'The school was set up, but this account could not be loaded. Try again.' }
+  }
+  if (!found && schoolSlug && !localSchool) return { notice: 'This school is not set up on this computer yet. Ask the school admin to sign in here once, with internet.' }
+  return {}
+}
+
+let syncing = false
+async function syncAllSchools() {
+  if (!OFFLINE || syncing) return
+  syncing = true
+  try {
+    for (const school of rows('SELECT id FROM schools')) {
+      if (!getSetting(school.id, 'online_token')) continue
+      try { await syncSchool(school.id) } catch { /* offline right now; try again later */ }
+    }
+  } finally { syncing = false }
+}
+
 app.post('/api/offline/sync', authenticate, requireRole('Admin'), offlineOnly, async (request, response) => {
   try {
-    const schoolId = request.user.schoolId
-    const token = getSetting(schoolId, 'online_token')
-    if (!token) return response.status(409).json({ error: 'Link your online account first.' })
-    const started = new Date().toISOString()
-    const outgoing = sync.collectChanges(schoolId, getSetting(schoolId, 'last_push'))
-    const result = await onlineFetch('/api/sync', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ clientTime: started, serverCursor: getSetting(schoolId, 'server_cursor'), changes: outgoing })
-    })
-    if (result.status === 401) { dropSettings(schoolId); return response.status(409).json({ error: 'Your online sign-in expired. Link your online account again.' }) }
-    if (!result.ok || !result.body?.serverTime) return response.status(502).json({ error: result.body?.error || 'The website could not sync right now.' })
-    const skew = Date.parse(result.body.serverTime) - Date.parse(started) // how far this computer's clock is behind the website's
-    const stats = sync.applyChanges(schoolId, result.body.changes, -skew)
-    putSetting(schoolId, 'last_push', started)
-    putSetting(schoolId, 'server_cursor', result.body.serverTime)
-    putSetting(schoolId, 'last_sync_done', new Date().toISOString())
-    let creditsAdded = 0
-    try { const claimed = await claimWebsiteCredits(schoolId); creditsAdded = claimed.added || 0 } catch { /* credits are retried automatically */ }
-    response.json({ sent: sync.count(outgoing), received: stats.applied, conflicts: stats.conflicts + Number(result.body.stats?.conflicts || 0), creditsAdded })
+    const result = await syncSchool(request.user.schoolId)
+    if (result.error) return response.status(result.status || 500).json({ error: result.error })
+    response.json(result)
   } catch (error) { offlineFailure(response, error, 'Could not sync right now.') }
 })
 
@@ -795,18 +928,6 @@ async function claimWebsiteCredits(schoolId) {
   return { added: settled.added + moved.added }
 }
 
-let claiming = false
-async function claimForAllSchools() {
-  if (!OFFLINE || claiming) return
-  claiming = true
-  try {
-    for (const school of rows('SELECT id FROM schools')) {
-      if (!getSetting(school.id, 'online_token')) continue
-      try { await claimWebsiteCredits(school.id) } catch { /* offline right now; try again later */ }
-    }
-  } finally { claiming = false }
-}
-
 app.post('/api/offline/redeem', authenticate, requireRole('Admin'), offlineOnly, async (request, response) => {
   try {
     const schoolId = request.user.schoolId
@@ -865,7 +986,7 @@ async function start() {
   for (const school of rows('SELECT id FROM schools WHERE id NOT IN (SELECT DISTINCT school_id FROM credit_ledger)')) addCredits(school.id, STARTER_CREDITS, 'Free starter credits')
   db.run('DELETE FROM sessions WHERE expires_at < ?', [Date.now()])
   persist()
-  if (OFFLINE) { setTimeout(() => void claimForAllSchools(), 30000); setInterval(() => void claimForAllSchools(), 5 * 60 * 1000) }
+  if (OFFLINE) { setTimeout(() => void syncAllSchools(), 30000); setInterval(() => void syncAllSchools(), 5 * 60 * 1000) }
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`TIMPRIEST EDU server running on port ${PORT}, database at ${DB_FILE}`)
     if (OFFLINE) {
