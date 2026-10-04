@@ -111,3 +111,5 @@
 .draft-box p { margin: 0; font-size: 0.9rem; opacity: 0.85; }
 .draft-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 0.9rem; }
 .draft-row > span { flex: 1 1 220px; }
+
+.connected-heading { margin: 12px 0 6px; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }

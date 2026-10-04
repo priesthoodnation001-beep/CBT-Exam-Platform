@@ -263,7 +263,14 @@ function authenticate(request, response, next) {
   if (!user) return response.status(401).json({ error: 'Your session has expired. Please sign in again.' })
   request.user = { ...publicUser(user), schoolId: user.school_id }
   request.token = token
-  presence.set(user.id, { name: user.name, role: user.role, classSection: user.class_section || '', schoolId: user.school_id, seen: Date.now() })
+  const before = presence.get(user.id)
+  const nowMs = Date.now()
+  let persistedAt = before?.persistedAt || 0
+  if (user.role === 'Teacher' && nowMs - persistedAt > 60000) { // remember teachers' last seen on disk, at most once a minute
+    persistedAt = nowMs
+    try { run('INSERT INTO last_seen (user_id, school_id, seen_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET seen_at = excluded.seen_at', [user.id, user.school_id, new Date(nowMs).toISOString()]) } catch (error) { console.error('last seen not saved', error?.message || error) }
+  }
+  presence.set(user.id, { name: user.name, role: user.role, classSection: user.class_section || '', schoolId: user.school_id, seen: nowMs, persistedAt })
   next()
 }
 
@@ -373,15 +380,23 @@ app.get('/api/connections', authenticate, requireRole('Admin'), (request, respon
   const people = []
   for (const [userId, entry] of presence) {
     if (now - entry.seen > 10 * 60 * 1000) { presence.delete(userId); continue }
-    if (entry.schoolId !== request.user.schoolId || entry.role === 'Admin') continue
+    if (entry.schoolId !== request.user.schoolId || entry.role !== 'Student') continue // teachers are listed separately below, with their saved last-seen time
     const secondsAgo = Math.round((now - entry.seen) / 1000)
     people.push({ id: userId, name: entry.name, role: entry.role, classSection: entry.classSection, secondsAgo, connected: secondsAgo <= 25 })
   }
   people.sort((a, b) => Number(b.connected) - Number(a.connected) || a.role.localeCompare(b.role) || a.name.localeCompare(b.name))
+  // Every teacher, with when they were last seen. This survives restarts because it is saved in the database.
+  const stored = new Map(rows('SELECT user_id, seen_at FROM last_seen WHERE school_id = ?', [request.user.schoolId]).map((row) => [row.user_id, Date.parse(row.seen_at)]))
+  const teachersSeen = rows("SELECT id, name FROM users WHERE school_id = ? AND role = 'Teacher' AND deleted = 0", [request.user.schoolId]).map((teacher) => {
+    const live = presence.get(teacher.id)?.seen || 0
+    const seen = Math.max(live, stored.get(teacher.id) || 0)
+    return { id: teacher.id, name: teacher.name, connected: now - live <= 25000 && live > 0, lastSeen: seen ? new Date(seen).toISOString() : null }
+  }).sort((a, b) => Number(b.connected) - Number(a.connected) || (Date.parse(b.lastSeen || '') || 0) - (Date.parse(a.lastSeen || '') || 0) || a.name.localeCompare(b.name))
   response.json({
-    students: people.filter((person) => person.connected && person.role === 'Student').length,
-    teachers: people.filter((person) => person.connected && person.role === 'Teacher').length,
-    people
+    students: people.filter((person) => person.connected).length,
+    teachers: teachersSeen.filter((teacher) => teacher.connected).length,
+    people,
+    teachersSeen
   })
 })
 
@@ -1063,6 +1078,7 @@ async function start() {
   db.run('CREATE TABLE IF NOT EXISTS credit_ledger (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, change INTEGER NOT NULL, reason TEXT NOT NULL, reference TEXT, created_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS payments (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, amount_kobo INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS last_seen (user_id TEXT PRIMARY KEY, school_id TEXT NOT NULL, seen_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS question_drafts (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, user_id TEXT NOT NULL, subject TEXT NOT NULL, duration INTEGER NOT NULL DEFAULT 30, data TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (user_id, subject))')
   db.run('CREATE TABLE IF NOT EXISTS pending_purchases (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS redeemed_vouchers (reference TEXT PRIMARY KEY, credits INTEGER NOT NULL, redeemed_at TEXT NOT NULL)')

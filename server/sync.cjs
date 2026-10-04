@@ -48,6 +48,7 @@ module.exports = function createSync({ rows, exec, persist }) {
       exams: rows('SELECT id, title, subject, date, time, duration, questions, status, class_section AS classSection, updated_at AS updatedAt FROM exams WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       subjects: rows('SELECT subject, duration, approved, approved_at AS approvedAt, updated_at AS updatedAt FROM subject_settings WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       questions: rows('SELECT id, exam_id AS examId, subject, text, options, answer, created_at AS createdAt, updated_at AS updatedAt FROM questions WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
+      lastSeen: rows('SELECT user_id AS userId, seen_at AS seenAt FROM last_seen WHERE school_id = ? AND seen_at >= ?', [schoolId, after]),
       drafts: rows('SELECT id, user_id AS userId, subject, duration, data, updated_at AS updatedAt FROM question_drafts WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       submissions: rows('SELECT id, exam_id AS examId, student_id AS studentId, score, total, submitted_at AS submittedAt FROM submissions WHERE school_id = ? AND submitted_at >= ?', [schoolId, after]),
       tombstones: rows('SELECT kind, key, deleted_at AS deletedAt FROM tombstones WHERE school_id = ? AND deleted_at >= ?', [schoolId, after])
@@ -206,7 +207,15 @@ module.exports = function createSync({ rows, exec, persist }) {
         stats.applied += 1
       }
 
-      // 7. results are only added, never changed
+      // 7. last-seen times (the newest one wins; they never count as edits)
+      for (const entry of list(incoming?.lastSeen)) {
+        const seenAt = shift(entry.seenAt)
+        const userId = text(entry.userId, 100)
+        if (!seenAt || !userId || !rows('SELECT id FROM users WHERE id = ? AND school_id = ?', [userId, schoolId]).length) continue
+        exec('INSERT INTO last_seen (user_id, school_id, seen_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET seen_at = excluded.seen_at WHERE excluded.seen_at > last_seen.seen_at', [userId, schoolId, seenAt])
+      }
+
+      // 8. results are only added, never changed
       for (const result of list(incoming?.submissions)) {
         const submittedAt = shift(result.submittedAt)
         if (!submittedAt || !text(result.id, 100)) { stats.skipped += 1; continue }

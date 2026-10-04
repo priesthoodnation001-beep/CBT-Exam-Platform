@@ -648,9 +648,23 @@ function ConnectionBadge() {
   )
 }
 
-type ConnectedInfo = { students: number; teachers: number; people: { id: string; name: string; role: string; classSection: string; secondsAgo: number; connected: boolean }[] }
+type ConnectedInfo = {
+  students: number
+  teachers: number
+  people: { id: string; name: string; role: string; classSection: string; secondsAgo: number; connected: boolean }[]
+  teachersSeen: { id: string; name: string; connected: boolean; lastSeen: string | null }[]
+}
 
-// Admin dashboard: who is connected to this server right now, and who just dropped off.
+// How long ago, in plain words. After a day and a half it shows the date and time.
+function timeAgo(iso: string): string {
+  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000))
+  if (seconds < 90) return `${seconds}s ago`
+  if (seconds < 90 * 60) return `${Math.round(seconds / 60)} min ago`
+  if (seconds < 36 * 3600) return `${Math.round(seconds / 3600)} h ago`
+  return new Date(iso).toLocaleString()
+}
+
+// Admin dashboard: teachers with their last-seen time (kept even after the app is closed), and students connected right now.
 function ConnectedNow({ token, showNotice }: { token: string | null; showNotice: (message: string) => void }) {
   const [info, setInfo] = useState<ConnectedInfo | null>(null)
   const reload = useRef<() => Promise<void>>(async () => undefined)
@@ -662,18 +676,22 @@ function ConnectedNow({ token, showNotice }: { token: string | null; showNotice:
     const interval = window.setInterval(() => void load(), 10000)
     return () => { stopped = true; window.clearInterval(interval) }
   }, [token])
-  const signOut = async (person: { id: string; name: string; role: string }) => {
+  const signOut = async (person: { id: string; name: string }) => {
     if (!window.confirm(`Sign ${person.name} out now? If they are in the middle of an exam, answers they have not submitted will be lost.`)) return
     try { await api(`/users/${person.id}/logout`, token, { method: 'POST' }); showNotice(`${person.name} was signed out.`); await reload.current() } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not sign them out.') }
   }
   if (!info) return null
-  const ago = (seconds: number) => seconds < 90 ? `${seconds}s ago` : `${Math.round(seconds / 60)} min ago`
   return (
     <section className="panel connected-panel">
-      <div className="panel-header"><div><h3>Connected now</h3><p>{info.students} student{info.students === 1 ? '' : 's'} and {info.teachers} teacher{info.teachers === 1 ? '' : 's'} connected to this server.</p></div></div>
+      <div className="panel-header"><div><h3>Teachers and students</h3><p>{info.teachers} teacher{info.teachers === 1 ? '' : 's'} and {info.students} student{info.students === 1 ? '' : 's'} connected right now.</p></div></div>
+      <h4 className="connected-heading">Teachers</h4>
+      {info.teachersSeen.length === 0
+        ? <p className="connected-empty">No teacher accounts yet.</p>
+        : <ul className="connected-list">{info.teachersSeen.map((teacher) => <li key={teacher.id} className={teacher.connected ? 'on' : 'off'}><span className="conn-dot" /><strong>{teacher.name}</strong><em title={teacher.lastSeen ? new Date(teacher.lastSeen).toLocaleString() : ''}>{teacher.connected ? 'Connected now' : teacher.lastSeen ? `Last seen ${timeAgo(teacher.lastSeen)}` : 'Has not signed in yet'}</em>{teacher.lastSeen && <button className="text-button signout-button" type="button" onClick={() => void signOut(teacher)}>Sign out</button>}</li>)}</ul>}
+      <h4 className="connected-heading">Students</h4>
       {info.people.length === 0
-        ? <p className="connected-empty">Nobody is connected right now.</p>
-        : <ul className="connected-list">{info.people.map((person, index) => <li key={index} className={person.connected ? 'on' : 'off'}><span className="conn-dot" /><strong>{person.name}</strong><span>{person.role}{person.classSection ? ` · ${person.classSection}` : ''}</span><em>{person.connected ? 'Connected' : `Disconnected ${ago(person.secondsAgo)}`}</em><button className="text-button signout-button" type="button" onClick={() => void signOut(person)}>Sign out</button></li>)}</ul>}
+        ? <p className="connected-empty">No students connected in the last few minutes.</p>
+        : <ul className="connected-list">{info.people.map((person) => <li key={person.id} className={person.connected ? 'on' : 'off'}><span className="conn-dot" /><strong>{person.name}</strong><span>{person.classSection}</span><em>{person.connected ? 'Connected' : `Disconnected ${timeAgo(new Date(Date.now() - person.secondsAgo * 1000).toISOString())}`}</em><button className="text-button signout-button" type="button" onClick={() => void signOut(person)}>Sign out</button></li>)}</ul>}
     </section>
   )
 }
