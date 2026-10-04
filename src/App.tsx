@@ -65,7 +65,7 @@ async function api<T>(path: string, token: string | null, options: RequestInit =
   return response.status === 204 ? undefined as T : response.json()
 }
 
-function App() {
+function AppInner() {
   const [schoolSlug] = useState(readSchoolSlug)
   const [school, setSchool] = useState<School | null>(null)
   const [schoolError, setSchoolError] = useState('')
@@ -81,6 +81,14 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [showAccountForm, setShowAccountForm] = useState(false)
   const [showExamForm, setShowExamForm] = useState(false)
+
+  useEffect(() => {
+    if (!token) return
+    const ping = () => { fetch(`${API_BASE}/api/ping`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }).catch(() => undefined) }
+    ping()
+    const interval = window.setInterval(ping, 10000)
+    return () => window.clearInterval(interval)
+  }, [token])
   const [activeExam, setActiveExam] = useState<Exam | null>(null)
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number>>({})
   const [submitted, setSubmitted] = useState(false)
@@ -309,7 +317,7 @@ function App() {
                 {isTeacher && <button className="primary-button" onClick={() => setTab('Questions')}>+ Set questions</button>}
                 {isStudent && <button className="primary-button" onClick={() => { const next = data.exams.find((exam) => exam.status === 'Scheduled' && !exam.taken); setTab('My exams'); if (next) beginExam(next); else showNotice('No exam is available to start right now.') }}>Enter exam →</button>}
               </div>
-              {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} />}
+              {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} token={token} />}
               {tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
               {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} classes={Array.from(new Set(data.users.filter((account) => account.role === 'Student' && account.classSection).map((account) => account.classSection as string)))} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
               {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} aiReady={data.aiReady} aiRemaining={data.aiRemaining} />}
@@ -531,7 +539,7 @@ function OfflineBilling({ token, showNotice, refresh }: { token: string | null; 
   )
 }
 
-function Overview({ session, data, centre, setTab, setActiveExam }: { session: Account; data: Data; centre: string; setTab: (tab: Tab) => void; setActiveExam: (exam: Exam) => void }) {
+function Overview({ session, data, centre, setTab, setActiveExam, token = null }: { session: Account; data: Data; centre: string; setTab: (tab: Tab) => void; setActiveExam: (exam: Exam) => void; token?: string | null }) {
   const pad = (count: number) => String(count).padStart(2, '0')
   const open = data.exams.filter((exam) => exam.status === 'Scheduled' && !exam.taken)
   const stats = session.role === 'Admin'
@@ -541,6 +549,7 @@ function Overview({ session, data, centre, setTab, setActiveExam }: { session: A
       : [[pad(open.length), 'Upcoming exams', 'Ready to take'], [pad(data.exams.filter((exam) => exam.taken).length), 'Submitted', 'Completed exams'], ['--', 'Results', 'Managed by Admin']]
   return (
     <>
+      {session.role === 'Admin' && <ConnectedNow token={token} />}
       <div className="stats-grid">{stats.map(([value, label, note]) => <article className="stat-card" key={label}><span className="stat-value">{value}</span><span className="stat-label">{label}</span><span className="stat-note">{note}</span></article>)}</div>
       <div className="section-heading"><div><p className="eyebrow">At a glance</p><h2>{session.role === 'Admin' ? 'School activity' : 'Upcoming sessions'}</h2></div><button className="text-button" onClick={() => setTab(session.role === 'Admin' ? 'Schedule' : 'My exams')}>View details <span>→</span></button></div>
       <div className="dashboard-grid">
@@ -592,6 +601,59 @@ function Results({ results }: { results: Result[] }) {
       </div>
     </>
   )
+}
+
+// Small pill in the corner: green while this device can reach the server, red when it cannot.
+function ConnectionBadge() {
+  const [connected, setConnected] = useState(true)
+  useEffect(() => {
+    let stopped = false
+    const check = async () => {
+      const controller = new AbortController()
+      const timer = window.setTimeout(() => controller.abort(), 4000)
+      try {
+        const response = await fetch(`${API_BASE}/api/health`, { cache: 'no-store', signal: controller.signal })
+        if (!stopped) setConnected(response.ok)
+      } catch { if (!stopped) setConnected(false) } finally { window.clearTimeout(timer) }
+    }
+    void check()
+    const interval = window.setInterval(() => void check(), 5000)
+    return () => { stopped = true; window.clearInterval(interval) }
+  }, [])
+  return (
+    <div className={`conn-badge ${connected ? 'ok' : 'lost'}`} role="status" aria-live="polite">
+      <span className="conn-dot" />
+      {connected ? 'Connected to school server' : 'Disconnected from school server. Keep this window open. Reconnecting...'}
+    </div>
+  )
+}
+
+type ConnectedInfo = { students: number; teachers: number; people: { name: string; role: string; classSection: string; secondsAgo: number; connected: boolean }[] }
+
+// Admin dashboard: who is connected to this server right now, and who just dropped off.
+function ConnectedNow({ token }: { token: string | null }) {
+  const [info, setInfo] = useState<ConnectedInfo | null>(null)
+  useEffect(() => {
+    let stopped = false
+    const load = async () => { try { const result = await api<ConnectedInfo>('/connections', token); if (!stopped) setInfo(result) } catch { /* shown again on the next check */ } }
+    void load()
+    const interval = window.setInterval(() => void load(), 10000)
+    return () => { stopped = true; window.clearInterval(interval) }
+  }, [token])
+  if (!info) return null
+  const ago = (seconds: number) => seconds < 90 ? `${seconds}s ago` : `${Math.round(seconds / 60)} min ago`
+  return (
+    <section className="panel connected-panel">
+      <div className="panel-header"><div><h3>Connected now</h3><p>{info.students} student{info.students === 1 ? '' : 's'} and {info.teachers} teacher{info.teachers === 1 ? '' : 's'} connected to this server.</p></div></div>
+      {info.people.length === 0
+        ? <p className="connected-empty">Nobody is connected right now.</p>
+        : <ul className="connected-list">{info.people.map((person, index) => <li key={index} className={person.connected ? 'on' : 'off'}><span className="conn-dot" /><strong>{person.name}</strong><span>{person.role}{person.classSection ? ` · ${person.classSection}` : ''}</span><em>{person.connected ? 'Connected' : `Disconnected ${ago(person.secondsAgo)}`}</em></li>)}</ul>}
+    </section>
+  )
+}
+
+function App() {
+  return <><AppInner /><ConnectionBadge /></>
 }
 
 export default App

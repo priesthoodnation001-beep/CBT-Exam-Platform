@@ -253,6 +253,9 @@ function recordFailure(key) {
   else entry.count += 1
 }
 
+// Who has been talking to this server recently (kept in memory only).
+const presence = new Map()
+
 function authenticate(request, response, next) {
   const token = String(request.headers.authorization || '').replace('Bearer ', '')
   const session = token ? rows('SELECT * FROM sessions WHERE token_hash = ? AND expires_at > ?', [hashToken(token), Date.now()]).at(0) : undefined
@@ -260,6 +263,7 @@ function authenticate(request, response, next) {
   if (!user) return response.status(401).json({ error: 'Your session has expired. Please sign in again.' })
   request.user = { ...publicUser(user), schoolId: user.school_id }
   request.token = token
+  presence.set(user.id, { name: user.name, role: user.role, classSection: user.class_section || '', schoolId: user.school_id, seen: Date.now() })
   next()
 }
 
@@ -360,6 +364,26 @@ app.post('/api/login', async (request, response) => {
 })
 
 /* ---------- signed-in routes ---------- */
+
+// Devices call this every few seconds while someone is signed in; it keeps them listed as connected.
+app.get('/api/ping', authenticate, (_request, response) => response.json({ ok: true, time: Date.now() }))
+
+app.get('/api/connections', authenticate, requireRole('Admin'), (request, response) => {
+  const now = Date.now()
+  const people = []
+  for (const [userId, entry] of presence) {
+    if (now - entry.seen > 10 * 60 * 1000) { presence.delete(userId); continue }
+    if (entry.schoolId !== request.user.schoolId || entry.role === 'Admin') continue
+    const secondsAgo = Math.round((now - entry.seen) / 1000)
+    people.push({ name: entry.name, role: entry.role, classSection: entry.classSection, secondsAgo, connected: secondsAgo <= 25 })
+  }
+  people.sort((a, b) => Number(b.connected) - Number(a.connected) || a.role.localeCompare(b.role) || a.name.localeCompare(b.name))
+  response.json({
+    students: people.filter((person) => person.connected && person.role === 'Student').length,
+    teachers: people.filter((person) => person.connected && person.role === 'Teacher').length,
+    people
+  })
+})
 
 app.get('/api/me', authenticate, (request, response) => {
   const { schoolId, ...user } = request.user
