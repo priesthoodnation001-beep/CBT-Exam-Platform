@@ -92,6 +92,7 @@ function AppInner() {
   const [activeExam, setActiveExam] = useState<Exam | null>(null)
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number>>({})
   const [submitted, setSubmitted] = useState(false)
+  const loggingOut = useRef(false)
   const [loading, setLoading] = useState(false)
   const [biometricAvailable, setBiometricAvailable] = useState(false)
   const [biometricSaved, setBiometricSaved] = useState(false)
@@ -217,13 +218,32 @@ function AppInner() {
 
   async function deleteSubject(subject: string) { if (!window.confirm(`Delete all questions for ${subject}? This cannot be undone.`)) return; try { await api(`/subjects/${encodeURIComponent(subject)}`, token, { method: 'DELETE' }); await refresh(); showNotice(`${subject} question set was deleted.`) } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not delete question set.') } }
 
-  async function submitExam(answers: Record<string, number>) {
-    if (!activeExam) return
+  // Returns true once the server has accepted the exam. autoLogout is false when the student chose to log out themselves.
+  async function submitExam(answers: Record<string, number>, autoLogout = true): Promise<boolean> {
+    if (!activeExam) return false
     try {
       await api('/submissions', token, { method: 'POST', body: JSON.stringify({ examId: activeExam.id, answers }) })
       setSubmitted(true); showNotice('Exam submitted successfully.')
-      if (session?.role === 'Student') window.setTimeout(() => logout(), 4000)
-    } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not submit exam.') }
+      if (autoLogout && session?.role === 'Student') window.setTimeout(() => logout(), 4000)
+      return true
+    } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not submit exam.'); return false }
+  }
+
+  // A student who logs out in the middle of an exam submits it. If sending fails they stay signed in, so no answers are lost.
+  async function logoutClicked() {
+    if (session?.role !== 'Student') { logout(); return }
+    if (activeExam && !submitted) {
+      if (loggingOut.current) return
+      const total = data.questions.filter((question) => question.examId === activeExam.id || (!question.examId && question.subject === activeExam.subject)).length
+      const answered = Object.keys(selectedAnswers).length
+      if (!window.confirm(`Log out now? Your exam will be submitted automatically with what you have answered so far (${answered} of ${total} questions), and you cannot take it again.`)) return
+      loggingOut.current = true
+      const sent = await submitExam(selectedAnswers, false)
+      loggingOut.current = false
+      if (sent) logout()
+      return
+    }
+    if (window.confirm('Log out now?')) logout()
   }
 
   function confirmSubmit() {
@@ -292,7 +312,7 @@ function AppInner() {
           {navItems.map((item) => <button className={tab === item ? 'nav-item active' : 'nav-item'} key={item} onClick={() => { setTab(item); setMenuOpen(false) }}><span className="nav-icon">{navIcon(item)}</span>{item}</button>)}
         </nav>
         <div className="sidebar-bottom">
-          {!isStudent && <button className="nav-item" onClick={logout}><span className="nav-icon">↪</span>Sign out</button>}
+          <button className="nav-item" onClick={() => void logoutClicked()}><span className="nav-icon">↪</span>Log out</button>
           <div className="user-chip"><span className="avatar">{session.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span><strong>{session.name}</strong><small>{session.role}</small></span></div>
         </div>
       </aside>
