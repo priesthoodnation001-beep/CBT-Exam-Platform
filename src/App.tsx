@@ -9,6 +9,7 @@ import ExamSchedule from './ExamSchedule'
 import PublicHome from './PublicHome'
 import SubjectQuestionWizard from './SubjectQuestionWizard'
 import TimedExamRunner from './TimedExamRunner'
+import CreatorPage from './CreatorPage'
 import { API_BASE } from './apiBase'
 import './App.css'
 import './mobile.css'
@@ -497,10 +498,8 @@ function OfflineBilling({ token, showNotice, refresh }: { token: string | null; 
   }
 
   const link = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void run(async () => { await post('/offline/link', { slug, username, password }); setPassword(''); await load(); showNotice('Online account linked.') }) }
-  const buy = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void run(async () => { const result = await post<{ authorizationUrl: string }>('/offline/checkout', { credits }); window.open(result.authorizationUrl, '_blank'); await load(); showNotice('Finish the payment in your browser, then come back and tap "I have paid".') }) }
-  const redeem = () => void run(async () => { const result = await post<{ added: number; waiting: number }>('/offline/redeem', {}); await refresh(); await load(); showNotice(result.added > 0 ? `${result.added} credits added.` : result.waiting > 0 ? 'Payment not confirmed yet. Wait a moment and try again.' : 'No payments are waiting.') })
-  const claim = () => void run(async () => { const result = await post<{ added: number }>('/offline/claim', {}); await refresh(); await load(); showNotice(result.added > 0 ? `${result.added} credits added from the website.` : 'No new credits on the website.') })
-  const syncNow = () => void run(async () => { const result = await post<{ sent: number; received: number; conflicts: number; creditsAdded?: number }>('/offline/sync', {}); await refresh(); await load(); showNotice(`Sync finished. Sent ${result.sent}, received ${result.received}.${result.creditsAdded ? ` ${result.creditsAdded} credits added.` : ''}${result.conflicts ? ` ${result.conflicts} duplicate account(s) were skipped.` : ''}`) })
+  const buy = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void run(async () => { const result = await post<{ authorizationUrl: string }>('/offline/checkout', { credits }); window.open(result.authorizationUrl, '_blank'); await load(); showNotice('Finish the payment in your browser, then come back and tap "I have paid, update my credits".') }) }
+  const syncNow = () => void run(async () => { const result = await post<{ sent: number; received: number; conflicts: number }>('/offline/sync', {}); await refresh(); await load(); showNotice(`Sync finished. Sent ${result.sent}, received ${result.received}.${result.conflicts ? ` ${result.conflicts} duplicate account(s) were skipped.` : ''}`) })
   const unlink = () => void run(async () => { await post('/offline/unlink', {}); await load() })
 
   if (!info) return <p>{error || 'Loading billing...'}</p>
@@ -528,25 +527,17 @@ function OfflineBilling({ token, showNotice, refresh }: { token: string | null; 
           </>
         ) : (
           <>
-            <h3>Sync with the website</h3>
-            <p>Linked to <strong>{info.onlineSlug}</strong>. Syncing brings accounts, questions, exams and approvals from the website to this computer, and sends yours back, including exam results. It needs internet while it runs. {info.lastSync ? `Last synced ${new Date(info.lastSync).toLocaleString()}.` : 'Not synced yet.'}</p>
+            <h3>Credits and sync</h3>
+            <p>Linked to <strong>{info.onlineSlug}</strong>. Your credits are the same on the website and on this computer. Every exam used here, and every purchase made on the website, appears on both after a sync. This computer syncs by itself every couple of minutes while it has internet, and you can sync right now. It also brings accounts, questions, exams and approvals up to date and sends exam results to the website. {info.lastSync ? `Last synced ${new Date(info.lastSync).toLocaleString()}.` : 'Not synced yet.'}</p>
             <button className="primary-button" type="button" onClick={syncNow} disabled={busy}>{busy ? 'Please wait...' : 'Sync now'}</button>
-            <h3>Credits bought on the website</h3>
-            <p>Credits you buy on the website are added to this computer automatically, about every 5 minutes while it has internet. You can also check right now.</p>
-            <button className="primary-button" type="button" onClick={claim} disabled={busy}>{busy ? 'Please wait...' : 'Check for new credits'}</button>
             <h3>Buy credits</h3>
-            <p> This computer must be connected to the internet while you pay. Buy {info.minCredits} to {info.maxCredits.toLocaleString()} credits.</p>
+            <p>This computer must be connected to the internet while you pay. Buy {info.minCredits} to {info.maxCredits.toLocaleString()} credits.</p>
             <form className="profile-form" onSubmit={buy}>
               <label>Number of credits<input type="number" min={info.minCredits} max={info.maxCredits} value={credits} onChange={(event) => setCredits(Number(event.target.value))} required /></label>
               <p><strong>Total: ₦{total.toLocaleString()}</strong></p>
               <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Please wait...' : 'Pay with Paystack'}</button>
             </form>
-            {info.pending.length > 0 && (
-              <>
-                <p>{info.pending.length} payment{info.pending.length > 1 ? 's are' : ' is'} waiting to be added ({info.pending.reduce((sum, item) => sum + item.credits, 0)} credits).</p>
-                <button className="primary-button" type="button" onClick={redeem} disabled={busy}>I have paid, add my credits</button>
-              </>
-            )}
+            <button className="secondary-button" type="button" onClick={syncNow} disabled={busy}>I have paid, update my credits</button>
             <p><button className="text-button" type="button" onClick={unlink} disabled={busy}>Unlink online account</button></p>
           </>
         )}
@@ -697,6 +688,7 @@ function ConnectedNow({ token, showNotice }: { token: string | null; showNotice:
 }
 
 function App() {
+  if (window.location.pathname.replace(/\/+$/, '') === '/creator') return <CreatorPage /> // the owner's tools, only on the website
   return <><AppInner /><ConnectionBadge /></>
 }
 

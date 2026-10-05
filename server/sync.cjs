@@ -14,6 +14,7 @@ const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 const MAX_ROWS = 50000
 
 module.exports = function createSync({ rows, exec, persist }) {
+  // The credit balance is the sum of the credit history. Both sides keep the same history, so both show the same number.
   const text = (value, max = 5000) => String(value ?? '').slice(0, max)
   const number = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback)
   const list = (value) => (Array.isArray(value) ? value.slice(0, MAX_ROWS) : [])
@@ -48,6 +49,7 @@ module.exports = function createSync({ rows, exec, persist }) {
       exams: rows('SELECT id, title, subject, date, time, duration, questions, status, class_section AS classSection, updated_at AS updatedAt FROM exams WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       subjects: rows('SELECT subject, duration, approved, approved_at AS approvedAt, updated_at AS updatedAt FROM subject_settings WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       questions: rows('SELECT id, exam_id AS examId, subject, text, options, answer, created_at AS createdAt, updated_at AS updatedAt FROM questions WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
+      ledger: rows('SELECT id, change, reason, reference, created_at AS createdAt FROM credit_ledger WHERE school_id = ? AND created_at >= ?', [schoolId, after]),
       lastSeen: rows('SELECT user_id AS userId, seen_at AS seenAt FROM last_seen WHERE school_id = ? AND seen_at >= ?', [schoolId, after]),
       drafts: rows('SELECT id, user_id AS userId, subject, duration, data, updated_at AS updatedAt FROM question_drafts WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       submissions: rows('SELECT id, exam_id AS examId, student_id AS studentId, score, total, submitted_at AS submittedAt FROM submissions WHERE school_id = ? AND submitted_at >= ?', [schoolId, after]),
@@ -60,7 +62,9 @@ module.exports = function createSync({ rows, exec, persist }) {
   }
 
   // Merge changes from the other side into this school. skewMs is added to the other side's times.
-  function applyChanges(schoolId, incoming, skewMs = 0) {
+  // options.ledger: 'all' (default) accepts every credit entry; 'usage-only' (used by the website when a school computer reports in)
+  // accepts only "1 credit used for an exam", so a school computer can never add credits to itself.
+  function applyChanges(schoolId, incoming, skewMs = 0, options = {}) {
     const stats = { applied: 0, skipped: 0, conflicts: 0 }
     const ceiling = Date.now() // a change can never be dated in the future, so a wrong clock cannot win forever
     const shift = (value) => {
@@ -215,7 +219,18 @@ module.exports = function createSync({ rows, exec, persist }) {
         exec('INSERT INTO last_seen (user_id, school_id, seen_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET seen_at = excluded.seen_at WHERE excluded.seen_at > last_seen.seen_at', [userId, schoolId, seenAt])
       }
 
-      // 8. results are only added, never changed
+      // 8. credit history (entries are only ever added, each has a unique id)
+      for (const entry of list(incoming?.ledger)) {
+        const createdAt = shift(entry.createdAt)
+        const id = text(entry.id, 100)
+        const change = Math.trunc(number(entry.change))
+        if (!createdAt || !id || !change || Math.abs(change) > 1000000) continue
+        if (options.ledger === 'usage-only' && !(change === -1 && text(entry.reason, 50) === 'Exam attempt')) { stats.skipped += 1; continue }
+        if (rows('SELECT id FROM credit_ledger WHERE id = ?', [id]).length) continue
+        exec('INSERT INTO credit_ledger (id, school_id, change, reason, reference, created_at) VALUES (?, ?, ?, ?, ?, ?)', [id, schoolId, change, text(entry.reason, 200), entry.reference ? text(entry.reference, 200) : null, createdAt])
+      }
+
+      // 9. results are only added, never changed
       for (const result of list(incoming?.submissions)) {
         const submittedAt = shift(result.submittedAt)
         if (!submittedAt || !text(result.id, 100)) { stats.skipped += 1; continue }

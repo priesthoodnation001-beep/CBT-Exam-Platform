@@ -11,7 +11,7 @@ const DATA_DIR = process.env.CBT_DATA_DIR || path.join(__dirname, '..', 'data')
 const DB_FILE = path.join(DATA_DIR, 'timpriest-v2.sqlite')
 const CLIENT_DIR = path.join(__dirname, '..', 'dist')
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000
-const RESERVED_SLUGS = new Set(['api', 'assets', 'admin', 'login', 'register', 'static', 'favicon.ico'])
+const RESERVED_SLUGS = new Set(['api', 'assets', 'admin', 'login', 'register', 'static', 'favicon.ico', 'creator'])
 const OFFLINE = ['1', 'true', 'yes'].includes(String(process.env.OFFLINE_MODE || '').toLowerCase()) // school-LAN mode: runs on the school's own computer; credits are bought online and entered as signed vouchers
 const ONLINE_URL = (process.env.ONLINE_URL || 'https://timpriestedu.up.railway.app').replace(/\/$/, '')
 const VOUCHER_PRIVATE = String(process.env.VOUCHER_PRIVATE_KEY || '').trim() // online server only (Railway variable)
@@ -132,12 +132,13 @@ function makeSlug(name) {
 
 /* ---------- credits & payments ---------- */
 
+// One shared balance: the sum of the credit history, which the website and the school computers keep in step by syncing.
 function creditBalance(schoolId) {
-  return Number(rows('SELECT credits FROM schools WHERE id = ?', [schoolId]).at(0)?.credits || 0)
+  const total = Number(rows('SELECT COALESCE(SUM(change), 0) AS total FROM credit_ledger WHERE school_id = ?', [schoolId]).at(0)?.total || 0)
+  return Math.max(0, total)
 }
 
 function addCredits(schoolId, change, reason, reference = null) {
-  run('UPDATE schools SET credits = MAX(0, credits + ?) WHERE id = ?', [change, schoolId])
   run('INSERT INTO credit_ledger (id, school_id, change, reason, reference, created_at) VALUES (?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), schoolId, change, reason, reference, new Date().toISOString()])
 }
 
@@ -585,6 +586,7 @@ app.post('/api/submissions', authenticate, requireRole('Student'), (request, res
   const total = examQuestions.length
   const score = examQuestions.reduce((sum, question) => sum + (Number(answers[question.id]) === Number(question.answer) ? 1 : 0), 0)
   run('INSERT INTO submissions (id, school_id, exam_id, student_id, score, total, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), schoolId, examId, request.user.id, score, total, new Date().toISOString()])
+  scheduleQuickSync(schoolId)
   addCredits(schoolId, -1, 'Exam attempt', examId + ':' + request.user.id) // never blocks a finished exam; balance stops at 0
   response.status(201).json({ score, total })
 })
@@ -774,7 +776,7 @@ app.post('/api/sync', authenticate, requireRole('Admin'), (request, response) =>
     const clientTime = Date.parse(String(request.body?.clientTime || ''))
     if (Number.isNaN(clientTime)) return response.status(400).json({ error: 'Missing clock time.' })
     const skew = Date.now() - clientTime // how far the school computer's clock is behind this server's
-    const stats = sync.applyChanges(schoolId, request.body?.changes, skew)
+    const stats = sync.applyChanges(schoolId, request.body?.changes, skew, { ledger: 'usage-only' })
     const serverTime = new Date().toISOString()
     const changes = sync.collectChanges(schoolId, String(request.body?.serverCursor || ''))
     response.json({ serverTime, changes, stats })
@@ -846,9 +848,7 @@ async function syncSchool(schoolId) {
   putSetting(schoolId, 'last_push', started)
   putSetting(schoolId, 'server_cursor', result.body.serverTime)
   putSetting(schoolId, 'last_sync_done', new Date().toISOString())
-  let creditsAdded = 0
-  try { const claimed = await claimWebsiteCredits(schoolId); creditsAdded = claimed.added || 0 } catch { /* credits are retried automatically */ }
-  return { sent: sync.count(outgoing), received: stats.applied, conflicts: stats.conflicts + Number(result.body.stats?.conflicts || 0), creditsAdded }
+  return { sent: sync.count(outgoing), received: stats.applied, conflicts: stats.conflicts + Number(result.body.stats?.conflicts || 0) }
 }
 
 // Creates this computer's copy of a school that was registered on the website (same id, same link name).
@@ -916,6 +916,16 @@ async function offlineLoginFallback({ role, id, password, schoolSlug, lookup, ha
   return {}
 }
 
+// After a student submits on a school computer, tell the website within seconds so both show the same credits.
+const quickSyncTimers = new Map()
+function scheduleQuickSync(schoolId) {
+  if (!OFFLINE || quickSyncTimers.has(schoolId)) return
+  quickSyncTimers.set(schoolId, setTimeout(async () => {
+    quickSyncTimers.delete(schoolId)
+    try { await syncSchool(schoolId) } catch { /* the regular sync will catch up */ }
+  }, 15000))
+}
+
 let syncing = false
 async function syncAllSchools() {
   if (!OFFLINE || syncing) return
@@ -948,10 +958,9 @@ app.post('/api/offline/checkout', authenticate, requireRole('Admin'), offlineOnl
     if (!token) return response.status(409).json({ error: 'Link your online account first.' })
     const credits = Math.floor(Number(request.body?.credits))
     if (!credits || credits < MIN_CREDITS || credits > MAX_CREDITS) return response.status(400).json({ error: `Buy between ${MIN_CREDITS} and ${MAX_CREDITS} credits.` })
-    const result = await onlineFetch('/api/billing/checkout', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ credits, target: 'offline' }) })
+    const result = await onlineFetch('/api/billing/checkout', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ credits }) })
     if (result.status === 401) { dropSettings(schoolId); return response.status(409).json({ error: 'Your online sign-in expired. Link your online account again.' }) }
     if (!result.ok || !result.body?.authorizationUrl) return response.status(502).json({ error: result.body?.error || 'Could not start the payment.' })
-    run("INSERT INTO pending_purchases (reference, school_id, credits, created_at, status) VALUES (?, ?, ?, ?, 'pending')", [result.body.reference, schoolId, credits, new Date().toISOString()])
     response.json({ authorizationUrl: result.body.authorizationUrl, reference: result.body.reference })
   } catch (error) { offlineFailure(response, error, 'Could not start the payment.') }
 })
@@ -1049,6 +1058,158 @@ app.post('/api/offline/claim', authenticate, requireRole('Admin'), offlineOnly, 
   } catch (error) { offlineFailure(response, error, 'Could not check for new credits.') }
 })
 
+/* ---------- creator tools (website only): manage schools, payments and credits without touching code ---------- */
+
+const CREATOR_USER = String(process.env.CREATOR_USERNAME || '')
+const CREATOR_PASS = String(process.env.CREATOR_PASSWORD || '')
+const digest = (value) => crypto.createHash('sha256').update(String(value)).digest()
+const sameText = (a, b) => crypto.timingSafeEqual(digest(a), digest(b))
+
+function creatorAuth(request, response, next) {
+  if (OFFLINE) return response.status(404).json({ error: 'Creator tools are only on the website.' })
+  const token = String(request.headers.authorization || '').replace('Bearer ', '')
+  const session = token ? rows('SELECT token_hash FROM creator_sessions WHERE token_hash = ? AND expires_at > ?', [hashToken(token), Date.now()]).at(0) : undefined
+  if (!session) return response.status(401).json({ error: 'Your creator session has expired. Sign in again.' })
+  next()
+}
+
+function creatorLog(action, details) {
+  run('INSERT INTO creator_log (id, at, action, details) VALUES (?, ?, ?, ?)', [crypto.randomUUID(), new Date().toISOString(), action, String(details).slice(0, 500)])
+}
+
+app.post('/api/creator/login', (request, response) => {
+  if (OFFLINE) return response.status(404).json({ error: 'Creator tools are only on the website.' })
+  if (!CREATOR_USER || !CREATOR_PASS) return response.status(503).json({ error: 'Creator access is not set up. Add CREATOR_USERNAME and CREATOR_PASSWORD in the Railway variables.' })
+  const key = `creator|${request.ip}`
+  if (tooManyAttempts(key)) return response.status(429).json({ error: 'Too many attempts. Please wait a few minutes and try again.' })
+  const { username = '', password = '' } = request.body || {}
+  if (!sameText(username, CREATOR_USER) || !sameText(password, CREATOR_PASS)) { recordFailure(key); return response.status(401).json({ error: 'Username or password is incorrect.' }) }
+  attempts.delete(key)
+  const token = crypto.randomBytes(32).toString('hex')
+  run('DELETE FROM creator_sessions WHERE expires_at < ?', [Date.now()])
+  run('INSERT INTO creator_sessions (token_hash, expires_at) VALUES (?, ?)', [hashToken(token), Date.now() + 8 * 60 * 60 * 1000])
+  response.json({ token })
+})
+
+app.get('/api/creator/overview', creatorAuth, (_request, response) => {
+  const count = (sql, id) => Number(rows(sql, [id]).at(0)?.n || 0)
+  const schools = rows('SELECT id, name, slug, email, created_at FROM schools ORDER BY created_at DESC').map((school) => ({
+    ...school,
+    credits: creditBalance(school.id),
+    admins: count("SELECT COUNT(*) AS n FROM users WHERE school_id = ? AND role = 'Admin' AND deleted = 0", school.id),
+    teachers: count("SELECT COUNT(*) AS n FROM users WHERE school_id = ? AND role = 'Teacher' AND deleted = 0", school.id),
+    students: count("SELECT COUNT(*) AS n FROM users WHERE school_id = ? AND role = 'Student' AND deleted = 0", school.id),
+    exams: count('SELECT COUNT(*) AS n FROM exams WHERE school_id = ?', school.id),
+    results: count('SELECT COUNT(*) AS n FROM submissions WHERE school_id = ?', school.id)
+  }))
+  const paid = rows("SELECT COALESCE(SUM(amount_kobo), 0) AS kobo, COUNT(*) AS n FROM payments WHERE status = 'success'").at(0)
+  response.json({
+    schools,
+    totals: { schools: schools.length, students: schools.reduce((sum, school) => sum + school.students, 0), creditsHeld: schools.reduce((sum, school) => sum + school.credits, 0), paymentsCount: Number(paid.n), revenueNaira: Number(paid.kobo) / 100 },
+    paymentsReady: Boolean(PAYSTACK_SECRET)
+  })
+})
+
+app.get('/api/creator/schools/:id', creatorAuth, (request, response) => {
+  const school = rows('SELECT id, name, slug, email FROM schools WHERE id = ?', [request.params.id]).at(0)
+  if (!school) return response.status(404).json({ error: 'School not found.' })
+  response.json({
+    school,
+    accounts: rows("SELECT id, role, name, username FROM users WHERE school_id = ? AND role != 'Student' AND deleted = 0 ORDER BY role, name", [school.id]),
+    history: rows('SELECT change, reason, created_at FROM credit_ledger WHERE school_id = ? ORDER BY created_at DESC LIMIT 15', [school.id])
+  })
+})
+
+app.post('/api/creator/schools/:id/credits', creatorAuth, (request, response) => {
+  const school = rows('SELECT id, name FROM schools WHERE id = ?', [request.params.id]).at(0)
+  if (!school) return response.status(404).json({ error: 'School not found.' })
+  const change = Math.trunc(Number(request.body?.change))
+  const reason = String(request.body?.reason || '').trim().slice(0, 150)
+  if (!change || Math.abs(change) > 100000) return response.status(400).json({ error: 'Enter a number of credits between 1 and 100000 (use a minus sign to take credits away).' })
+  if (reason.length < 3) return response.status(400).json({ error: 'Write a short reason, for example "Paid by bank transfer".' })
+  addCredits(school.id, change, `Creator: ${reason}`)
+  creatorLog('credits', `${change > 0 ? '+' : ''}${change} for ${school.name}. ${reason}`)
+  response.json({ credits: creditBalance(school.id) })
+})
+
+app.post('/api/creator/users/:id/password', creatorAuth, (request, response) => {
+  const user = rows("SELECT id, name, role, school_id FROM users WHERE id = ? AND role != 'Student' AND deleted = 0", [request.params.id]).at(0)
+  if (!user) return response.status(404).json({ error: 'Account not found.' })
+  const password = String(request.body?.newPassword || '')
+  if (password.length < 6) return response.status(400).json({ error: 'The new password must be at least 6 characters.' })
+  run('UPDATE users SET password_hash = ? WHERE id = ?', [hashPassword(password), user.id])
+  run('DELETE FROM sessions WHERE user_id = ?', [user.id])
+  const school = rows('SELECT name FROM schools WHERE id = ?', [user.school_id]).at(0)?.name || ''
+  creatorLog('password', `Reset the password of ${user.role} ${user.name} (${school})`)
+  response.json({ ok: true })
+})
+
+app.post('/api/creator/schools/:id/delete', creatorAuth, (request, response) => {
+  const school = rows('SELECT id, name, slug FROM schools WHERE id = ?', [request.params.id]).at(0)
+  if (!school) return response.status(404).json({ error: 'School not found.' })
+  if (String(request.body?.confirmSlug || '') !== school.slug) return response.status(400).json({ error: 'Type the school link name exactly to confirm.' })
+  db.run('BEGIN')
+  try {
+    db.run('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE school_id = ?)', [school.id])
+    for (const table of ['submissions', 'questions', 'exams', 'subject_settings', 'question_drafts', 'last_seen', 'tombstones', 'credit_ledger', 'users']) db.run(`DELETE FROM ${table} WHERE school_id = ?`, [school.id])
+    db.run('DELETE FROM settings WHERE key LIKE ?', [`${school.id}:%`])
+    db.run('DELETE FROM schools WHERE id = ?', [school.id])
+    db.run('COMMIT')
+  } catch (error) { try { db.run('ROLLBACK') } catch { /* nothing to undo */ } throw error }
+  persist()
+  creatorLog('delete-school', `Deleted ${school.name} (${school.slug}) and all its data. Payment records were kept.`)
+  response.json({ ok: true })
+})
+
+app.get('/api/creator/payments', creatorAuth, (_request, response) => {
+  const payments = rows('SELECT p.reference, p.credits, p.amount_kobo, p.status, p.created_at, p.paid_at, s.name AS school FROM payments p LEFT JOIN schools s ON s.id = p.school_id ORDER BY p.created_at DESC LIMIT 300')
+    .map((payment) => ({
+      reference: payment.reference,
+      school: payment.school || '(deleted school)',
+      credits: payment.credits,
+      amountNaira: payment.amount_kobo / 100,
+      createdAt: payment.created_at,
+      paidAt: payment.paid_at,
+      status: payment.status === 'pending' && Date.now() - Date.parse(payment.created_at) > 30 * 60 * 1000 ? 'abandoned?' : payment.status
+    }))
+  response.json({ payments })
+})
+
+// Asks Paystack what really happened to a payment, and adds the credits if it was paid.
+app.post('/api/creator/payments/:reference/verify', creatorAuth, async (request, response) => {
+  try {
+    if (!PAYSTACK_SECRET) return response.status(503).json({ error: 'Paystack is not set up on the server.' })
+    const reference = String(request.params.reference)
+    const payment = rows('SELECT status FROM payments WHERE reference = ?', [reference]).at(0)
+    if (!payment) return response.status(404).json({ error: 'Payment not found.' })
+    if (payment.status === 'success') return response.json({ status: 'success', message: 'Already paid and credited.' })
+    const result = await paystack(`/transaction/verify/${encodeURIComponent(reference)}`)
+    if (result.status && result.data?.status === 'success') {
+      const done = fulfilPayment(reference, result.data.amount)
+      creatorLog('payment-verified', `${reference} was paid; credits added.`)
+      return response.json({ status: done.ok ? 'success' : 'problem', message: done.ok ? 'Paystack confirms it was paid. The credits were added.' : done.error })
+    }
+    response.json({ status: result.data?.status || 'unknown', message: `Paystack says: ${result.data?.status || 'no record of this payment'}. No credits were added.` })
+  } catch (error) {
+    console.error('creator verify failed', error)
+    response.status(502).json({ error: 'Could not reach Paystack. Try again.' })
+  }
+})
+
+app.post('/api/creator/payments/:reference/dismiss', creatorAuth, (request, response) => {
+  const reference = String(request.params.reference)
+  const payment = rows('SELECT status FROM payments WHERE reference = ?', [reference]).at(0)
+  if (!payment) return response.status(404).json({ error: 'Payment not found.' })
+  if (payment.status !== 'pending') return response.status(400).json({ error: 'Only unpaid payments can be dismissed.' })
+  run("UPDATE payments SET status = 'abandoned' WHERE reference = ?", [reference])
+  creatorLog('payment-dismissed', `${reference} marked as abandoned.`)
+  response.json({ ok: true })
+})
+
+app.get('/api/creator/log', creatorAuth, (_request, response) => {
+  response.json({ log: rows('SELECT at, action, details FROM creator_log ORDER BY at DESC LIMIT 60') })
+})
+
 /* ---------- front-end files ---------- */
 
 app.use('/api', (_request, response) => response.status(404).json({ error: 'Not found.' }))
@@ -1078,6 +1239,8 @@ async function start() {
   db.run('CREATE TABLE IF NOT EXISTS credit_ledger (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, change INTEGER NOT NULL, reason TEXT NOT NULL, reference TEXT, created_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS payments (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, amount_kobo INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS creator_sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS creator_log (id TEXT PRIMARY KEY, at TEXT NOT NULL, action TEXT NOT NULL, details TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS last_seen (user_id TEXT PRIMARY KEY, school_id TEXT NOT NULL, seen_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS question_drafts (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, user_id TEXT NOT NULL, subject TEXT NOT NULL, duration INTEGER NOT NULL DEFAULT 30, data TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (user_id, subject))')
   db.run('CREATE TABLE IF NOT EXISTS pending_purchases (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL)')
@@ -1088,10 +1251,10 @@ async function start() {
   }
   sync = createSync({ rows, exec: (sql, values) => db.run(sql, values), persist })
   sync.migrate()
-  for (const school of rows('SELECT id FROM schools WHERE id NOT IN (SELECT DISTINCT school_id FROM credit_ledger)')) addCredits(school.id, STARTER_CREDITS, 'Free starter credits')
+  if (!OFFLINE) for (const school of rows('SELECT id FROM schools WHERE id NOT IN (SELECT DISTINCT school_id FROM credit_ledger)')) addCredits(school.id, STARTER_CREDITS, 'Free starter credits')
   db.run('DELETE FROM sessions WHERE expires_at < ?', [Date.now()])
   persist()
-  if (OFFLINE) { setTimeout(() => void syncAllSchools(), 30000); setInterval(() => void syncAllSchools(), 5 * 60 * 1000) }
+  if (OFFLINE) { setTimeout(() => void syncAllSchools(), 30000); setInterval(() => void syncAllSchools(), 2 * 60 * 1000) }
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`TIMPRIEST EDU server running on port ${PORT}, database at ${DB_FILE}`)
     if (OFFLINE) {
