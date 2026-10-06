@@ -1,0 +1,85 @@
+/* Sign-in pages. Everything is prefixed si- so it never clashes with the rest of the app. */
+.si { --acc: #1f6137; --acc-dark: #0c2a18; --acc-soft: #e4efe7; --gold: #c99a2e; --ink: #172a1e; --muted: #667a6d;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; color: var(--ink); min-height: 100vh; box-sizing: border-box; }
+.si *, .si *::before, .si *::after { box-sizing: border-box; }
+.si button, .si input { font-family: inherit; }
+.si-student { --acc: #1f6137; --acc-dark: #0c2a18; --acc-soft: #e4efe7; }
+.si-teacher { --acc: #2a5ea8; --acc-dark: #0b1f45; --acc-soft: #e4edfa; }
+.si-admin { --acc: #8a6410; --acc-dark: #0b130f; --acc-soft: #f8eecf; }
+
+/* split layout */
+.si-split { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); background: #f6f7f3; }
+.si-art { position: relative; overflow: hidden; padding: 34px 44px; color: #fff; display: flex; flex-direction: column; justify-content: space-between; background: linear-gradient(155deg, var(--acc) 0%, var(--acc-dark) 100%); }
+.si-admin .si-art { background: linear-gradient(155deg, #26382d 0%, #0b130f 100%); }
+.si-brand { display: flex; align-items: center; gap: 12px; font-weight: 700; letter-spacing: 0.03em; position: relative; z-index: 1; }
+.si-brand img { width: 44px; height: 44px; border-radius: 12px; }
+.si-brand.center { justify-content: center; color: var(--acc-dark); margin-bottom: 26px; }
+.si-art-body { position: relative; z-index: 1; max-width: 520px; }
+.si-art-icon { width: 62px; height: 62px; border-radius: 18px; display: grid; place-items: center; background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.25); margin-bottom: 22px; color: #f4d977; }
+.si-eyebrow { margin: 0 0 8px; font-size: 0.8rem; letter-spacing: 0.1em; text-transform: uppercase; color: #f4d977; font-weight: 700; }
+.si-eyebrow.dark { color: var(--muted); letter-spacing: 0.06em; }
+.si-art h1 { margin: 0 0 14px; font-size: clamp(2rem, 3.4vw, 3rem); line-height: 1.1; letter-spacing: -0.02em; }
+.si-lead { margin: 0 0 24px; color: rgba(255, 255, 255, 0.82); font-size: 1.05rem; line-height: 1.55; }
+.si-points { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.si-points li { display: flex; align-items: center; gap: 12px; font-size: 0.97rem; }
+.si-points svg { flex: none; color: #f4d977; background: rgba(255, 255, 255, 0.12); border-radius: 50%; padding: 3px; width: 26px; height: 26px; }
+.si-art-foot { position: relative; z-index: 1; font-size: 0.82rem; color: rgba(255, 255, 255, 0.65); }
+.si-orb { position: absolute; border-radius: 50%; background: rgba(255, 255, 255, 0.06); }
+.si-orb.one { width: 420px; height: 420px; right: -140px; top: -120px; }
+.si-orb.two { width: 300px; height: 300px; left: -100px; bottom: -110px; background: rgba(244, 217, 119, 0.08); }
+
+/* form side */
+.si-panel { display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 34px 26px; gap: 22px; }
+.si-box { width: min(440px, 100%); background: #fff; border-radius: 24px; padding: 34px 32px; box-shadow: 0 2px 4px rgba(16, 40, 26, 0.05), 0 20px 50px rgba(16, 40, 26, 0.1); display: grid; gap: 14px; border-top: 5px solid var(--acc); }
+.si-box h2 { margin: 0; font-size: 1.7rem; letter-spacing: -0.01em; }
+.si-sub { margin: 0; color: var(--muted); line-height: 1.5; font-size: 0.95rem; }
+.si-box form { display: grid; gap: 14px; }
+.si-box label { display: grid; gap: 6px; font-size: 0.85rem; font-weight: 600; color: var(--muted); }
+.si-box input[type='text'], .si-box input:not([type]), .si-box input[type='password'] { width: 100%; padding: 13px 14px; border: 1px solid #cfd9cf; border-radius: 12px; font-size: 1rem; background: #fff; color: var(--ink); }
+.si-box input:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 0 4px color-mix(in srgb, var(--acc) 18%, transparent); }
+.si-button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 14px 18px; border: 0; border-radius: 12px; background: var(--acc); color: #fff; font-size: 1.02rem; font-weight: 700; cursor: pointer; transition: transform 0.1s, box-shadow 0.15s; }
+.si-admin .si-button { background: #17492a; }
+.si-button:hover { box-shadow: 0 8px 20px color-mix(in srgb, var(--acc) 35%, transparent); }
+.si-button:active { transform: translateY(1px); }
+.si-button:disabled { opacity: 0.6; cursor: wait; }
+.si-ghost { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 12px; border: 1px solid #cfd9cf; border-radius: 12px; background: #fff; color: var(--ink); font-weight: 600; cursor: pointer; }
+.si-check { display: flex !important; align-items: center; gap: 10px !important; font-weight: 500 !important; }
+.si-error { margin: 0; padding: 10px 12px; border-radius: 10px; background: #fdecea; color: #b3261e; font-size: 0.9rem; }
+.si-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 4px; padding-top: 16px; border-top: 1px solid #e8ede6; font-size: 0.88rem; color: var(--muted); }
+.si-switch button { border: 0; background: transparent; color: var(--acc); font-weight: 700; cursor: pointer; padding: 0; font-size: 0.88rem; }
+.si-admin .si-switch button { color: #8a6410; }
+.si-switch button:hover { text-decoration: underline; }
+.si-copy { margin: 0; font-size: 0.78rem; color: #8a988f; text-align: center; }
+
+/* chooser */
+.si-chooser { background: radial-gradient(900px 500px at 15% -10%, #e4efe7 0%, transparent 60%), radial-gradient(800px 500px at 95% 110%, #f8eecf 0%, transparent 55%), #f6f7f3; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 34px 20px; gap: 6px; }
+.si-chooser-box { width: min(920px, 100%); text-align: center; display: grid; gap: 10px; }
+.si-chooser-box h2 { margin: 0; font-size: clamp(1.6rem, 3vw, 2.2rem); letter-spacing: -0.02em; }
+.si-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
+.si-card { text-align: left; background: #fff; border: 1px solid #e3e8df; border-radius: 22px; padding: 24px; cursor: pointer; display: grid; gap: 6px; box-shadow: 0 2px 4px rgba(16, 40, 26, 0.05), 0 12px 30px rgba(16, 40, 26, 0.07); transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s; color: var(--ink); }
+.si-card:hover:not(:disabled) { transform: translateY(-4px); box-shadow: 0 2px 4px rgba(16, 40, 26, 0.08), 0 22px 44px rgba(16, 40, 26, 0.14); }
+.si-card:disabled { opacity: 0.5; cursor: not-allowed; }
+.si-card-icon { width: 54px; height: 54px; border-radius: 16px; display: grid; place-items: center; margin-bottom: 10px; }
+.si-card.student .si-card-icon { background: #e4efe7; color: #1f6137; }
+.si-card.teacher .si-card-icon { background: #e4edfa; color: #2a5ea8; }
+.si-card.admin .si-card-icon { background: #f8eecf; color: #8a6410; }
+.si-card strong { font-size: 1.25rem; }
+.si-card small { color: var(--muted); font-size: 0.92rem; }
+.si-card-go { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; font-weight: 700; font-size: 0.92rem; }
+.si-card.student .si-card-go { color: #1f6137; }
+.si-card.teacher .si-card-go { color: #2a5ea8; }
+.si-card.admin .si-card-go { color: #8a6410; }
+
+@media (max-width: 900px) {
+  .si-split { grid-template-columns: 1fr; }
+  .si-art { padding: 22px 22px 26px; }
+  .si-art-body { margin: 18px 0 8px; }
+  .si-art h1 { font-size: 1.7rem; }
+  .si-lead, .si-points, .si-art-foot { display: none; }
+  .si-art-icon { width: 46px; height: 46px; margin-bottom: 12px; }
+  .si-panel { padding: 22px 16px 30px; }
+  .si-box { padding: 26px 22px; }
+  .si-cards { grid-template-columns: 1fr; }
+}
+
+.si-chooser .si-copy { margin-top: 26px; }

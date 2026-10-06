@@ -10,6 +10,8 @@ import PublicHome from './PublicHome'
 import SubjectQuestionWizard from './SubjectQuestionWizard'
 import TimedExamRunner from './TimedExamRunner'
 import CreatorPage from './CreatorPage'
+import DashboardShell from './DashboardShell'
+import { RoleChooser, RoleSignIn } from './RoleSignIn'
 import { API_BASE } from './apiBase'
 import './App.css'
 import './mobile.css'
@@ -39,15 +41,24 @@ function saveToken(value: string | null) {
   } catch { /* storage not available */ }
 }
 
-function readSchoolSlug(): string {
-  const first = window.location.pathname.split('/').filter(Boolean)[0] || ''
-  if (!first || first === 'api' || first === 'assets') return ''
-  try { return decodeURIComponent(first).toLowerCase() } catch { return '' }
+type Route = { slug: string; role: Role | null }
+
+// /<school>            -> choose how to sign in
+// /<school>/student    -> the Student sign-in page (also /teacher and /admin)
+// /admin, /teacher     -> sign-in pages that do not need a school link
+function readRoute(): Route {
+  const parts = window.location.pathname.split('/').filter(Boolean).map((part) => { try { return decodeURIComponent(part).toLowerCase() } catch { return part.toLowerCase() } })
+  const roleOf = (word: string): Role | null => word === 'admin' ? 'Admin' : word === 'teacher' ? 'Teacher' : word === 'student' ? 'Student' : null
+  const [first = '', second = ''] = parts
+  if (!first || first === 'api' || first === 'assets') return { slug: '', role: null }
+  const rootRole = roleOf(first)
+  if (rootRole) return { slug: '', role: rootRole }
+  return { slug: first, role: roleOf(second) }
 }
 
-function showSchoolAddress(slug?: string) {
+function showSchoolAddress(slug?: string, role?: string) {
   if (!slug || Capacitor.isNativePlatform()) return
-  const target = `/${encodeURIComponent(slug)}`
+  const target = `/${encodeURIComponent(slug)}${role ? `/${role.toLowerCase()}` : ''}`
   if (window.location.pathname !== target) window.history.replaceState(null, '', target)
 }
 
@@ -67,15 +78,16 @@ async function api<T>(path: string, token: string | null, options: RequestInit =
 }
 
 function AppInner() {
-  const [schoolSlug] = useState(readSchoolSlug)
+  const [route, setRoute] = useState<Route>(readRoute)
+  const schoolSlug = route.slug
   const [school, setSchool] = useState<School | null>(null)
   const [schoolError, setSchoolError] = useState('')
-  const [entryPage, setEntryPage] = useState<EntryPage>(schoolSlug ? 'login' : 'home')
+  const [entryPage, setEntryPage] = useState<EntryPage>(route.slug || route.role ? 'login' : 'home')
   const [session, setSession] = useState<Account | null>(null)
   const [token, setToken] = useState<string | null>(null)
   const [restoring, setRestoring] = useState(() => Boolean(readToken()))
   const [data, setData] = useState<Data>(emptyData)
-  const [loginRole, setLoginRole] = useState<Role>('Admin')
+  const [loginRole, setLoginRole] = useState<Role>(route.role || 'Admin')
   const [loginError, setLoginError] = useState('')
   const [tab, setTab] = useState<Tab>(() => new URLSearchParams(window.location.search).has('reference') ? 'Billing' : 'Overview')
   const [notice, setNotice] = useState('')
@@ -102,7 +114,21 @@ function AppInner() {
 
   const biometricServer = `timpriest-edu-${loginRole.toLowerCase()}`
 
+  useEffect(() => { if (route.role) setLoginRole(route.role) }, [route.role])
+
   useEffect(() => {
+    const onPop = () => setRoute(readRoute())
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  function goTo(next: Route) {
+    setRoute(next); setLoginError('')
+    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', '/' + [next.slug, next.role?.toLowerCase()].filter(Boolean).map((part) => encodeURIComponent(part as string)).join('/'))
+  }
+
+  useEffect(() => {
+    setSchool(null); setSchoolError('')
     if (!schoolSlug) return
     api<School>(`/schools/${encodeURIComponent(schoolSlug)}`, null)
       .then(setSchool)
@@ -119,7 +145,7 @@ function AppInner() {
         const loaded = await api<Data>('/data', stored)
         if (!active) return
         setToken(stored); setSession(result.user); setData(loaded)
-        showSchoolAddress(result.user.schoolSlug)
+        showSchoolAddress(result.user.schoolSlug, result.user.role)
       } catch { saveToken(null) } finally { if (active) setRestoring(false) }
     })()
     return () => { active = false }
@@ -132,9 +158,9 @@ function AppInner() {
   }, [])
 
   useEffect(() => {
-    if (!session?.schoolSlug || Capacitor.isNativePlatform()) return
-    const target = `/${session.schoolSlug}`
-    if (window.location.pathname !== target) window.history.replaceState(null, '', target)
+    if (!session?.schoolSlug) return
+    setRoute((current) => (current.slug === session.schoolSlug && current.role === session.role ? current : { slug: session.schoolSlug as string, role: session.role }))
+    showSchoolAddress(session.schoolSlug, session.role)
   }, [session])
 
   useEffect(() => {
@@ -161,7 +187,7 @@ function AppInner() {
   function startSession(result: { token: string; user: Account }) {
     saveToken(result.token)
     setToken(result.token); setSession(result.user); setTab('Overview'); setMenuOpen(false)
-    showSchoolAddress(result.user.schoolSlug)
+    showSchoolAddress(result.user.schoolSlug, result.user.role)
   }
 
   async function login(event: FormEvent<HTMLFormElement>) {
@@ -196,12 +222,12 @@ function AppInner() {
 
   function logout() {
     const slug = session?.schoolSlug
-    const goToSchool = () => { if (slug && !Capacitor.isNativePlatform()) window.location.assign(`/${slug}`) }
+    const goToSchool = () => { if (slug && !Capacitor.isNativePlatform()) window.location.assign(`/${slug}/${(session?.role || 'student').toLowerCase()}`) }
     if (token) void api('/logout', token, { method: 'POST' }).catch(() => undefined).finally(goToSchool)
     else goToSchool()
     saveToken(null)
     setToken(null); setSession(null); setActiveExam(null); setSubmitted(false); setData(emptyData); setMenuOpen(false); setEntryPage('login')
-    if (!Capacitor.isNativePlatform() && session?.schoolSlug) window.location.assign(`/${session.schoolSlug}`)
+    if (!Capacitor.isNativePlatform() && session?.schoolSlug) window.location.assign(`/${session.schoolSlug}/${session.role.toLowerCase()}`)
   }
 
   async function addAccount(event: FormEvent<HTMLFormElement>) {
@@ -252,40 +278,21 @@ function AppInner() {
   }
 
   function renderLogin() {
+    if (!route.role) return <RoleChooser schoolName={school?.name} schoolError={schoolError} onChoose={(role) => goTo({ slug: route.slug, role })} />
+    const cleanLink = (value: string) => value.trim().replace(/\/+$/, '').split('/').pop()?.toLowerCase() || ''
     return (
-      <div className="login-page">
-        <div className="login-art">
-          <div className="brand light"><img className="brand-logo" src="/logo.svg" alt="" /><span>TIMPRIEST EDU</span></div>
-          <div className="art-copy">
-            <p className="eyebrow">Examination platform</p>
-            <h1>Every learner.<br /><em>One fair chance.</em></h1>
-            <p>Secure, simple computer-based testing for modern schools and training centres.</p>
-          </div>
-          <div className="art-footer"><span className="status-dot" /> Secure · Separate data for every school</div>
-        </div>
-        <div className="login-panel">
-          <div className="login-box">
-            <p className="eyebrow">{school ? school.name : 'Welcome back'}</p>
-            <h2>Sign in to your portal</h2>
-            {schoolError ? <p className="form-error">{schoolError}</p> : <>
-              <p className="login-subtitle">Choose your access type to continue.</p>
-              <div className="role-tabs">
-                {(['Admin', 'Teacher', 'Student'] as Role[]).map((role) => <button type="button" className={loginRole === role ? 'selected' : ''} key={role} onClick={() => { setLoginRole(role); setLoginError('') }}>{role}</button>)}
-              </div>
-              <form onSubmit={login}>
-                <label>{loginRole === 'Student' ? 'Student ID' : 'Username'}<input name="identifier" placeholder={loginRole === 'Student' ? 'e.g. STUDENT-001' : `Enter ${loginRole.toLowerCase()} username`} autoComplete="username" required /></label>
-                {loginRole !== 'Student' && <label>Password<input name="password" type="password" placeholder="Enter password" autoComplete="current-password" required /></label>}
-                {loginRole === 'Student' && !schoolSlug && <p className="login-hint">Students: open your school's own sign-in link to continue.</p>}
-                {biometricAvailable && !biometricSaved && <label className="biometric-opt-in"><input type="checkbox" checked={enableBiometric} onChange={(event) => setEnableBiometric(event.target.checked)} />Enable fingerprint sign-in on this device</label>}
-                {loginError && <p className="form-error">{loginError}</p>}
-                <button className="primary-button full" type="submit" disabled={loading}>{loading ? 'Signing in...' : 'Continue'} <span>→</span></button>
-              </form>
-              {biometricAvailable && biometricSaved && <button className="biometric-button" type="button" onClick={loginWithBiometric} disabled={biometricLoading}><span aria-hidden="true">◉</span>{biometricLoading ? 'Waiting for fingerprint...' : 'Sign in with fingerprint'}</button>}
-            </>}
-          </div>
-          <p className="copyright">TIMPRIEST EDU · CBT Suite</p>
-        </div>
-      </div>
+      <RoleSignIn
+        role={route.role}
+        schoolName={school?.name}
+        needSchool={route.role === 'Student' && !route.slug}
+        schoolError={schoolError}
+        loading={loading}
+        error={loginError}
+        onSubmit={login}
+        onSwitchRole={(role) => goTo({ slug: route.slug, role })}
+        onSchoolLink={(link) => goTo({ slug: cleanLink(link), role: 'Student' })}
+        biometric={{ available: biometricAvailable, saved: biometricSaved, enable: enableBiometric, setEnable: setEnableBiometric, loading: biometricLoading, onSignIn: loginWithBiometric }}
+      />
     )
   }
 
@@ -301,57 +308,36 @@ function AppInner() {
   const firstName = session.name.split(' ')[0]
   const navItems: Tab[] = isAdmin ? ['Overview', 'Accounts', 'Schedule', 'Approvals', 'Results', 'Billing', 'Profile'] : isTeacher ? ['Overview', 'Questions', 'My exams', 'Profile'] : ['Overview', 'My exams']
   const examQuestions = activeExam ? data.questions.filter((question) => question.examId === activeExam.id || (!question.examId && question.subject === activeExam.subject)) : []
-  const navIcon = (item: Tab) => item === 'Overview' ? '◈' : item === 'Accounts' ? '♙' : item === 'Schedule' || item === 'My exams' ? '▣' : item === 'Questions' ? '✦' : item === 'Profile' ? '☺' : item === 'Billing' ? '₦' : '▥'
 
   return (
-    <div className={menuOpen ? 'app-shell menu-open' : 'app-shell'}>
-      <aside className="sidebar">
-        <div className="brand"><img className="brand-logo" src="/logo.svg" alt="" /><span>TIMPRIEST EDU</span></div>
-        <div className="centre-switcher"><span className="status-dot" /><span><strong>{centre}</strong><small>{session.role} portal</small></span></div>
-        <p className="nav-label">{session.role} portal</p>
-        <nav>
-          {navItems.map((item) => <button className={tab === item ? 'nav-item active' : 'nav-item'} key={item} onClick={() => { setTab(item); setMenuOpen(false) }}><span className="nav-icon">{navIcon(item)}</span>{item}</button>)}
-        </nav>
-        <div className="sidebar-bottom">
-          <button className="nav-item" onClick={() => void logoutClicked()}><span className="nav-icon">↪</span>Log out</button>
-          <div className="user-chip"><span className="avatar">{session.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span><strong>{session.name}</strong><small>{session.role}</small></span></div>
-        </div>
-      </aside>
-      <main className="main-content">
-        <header className="topbar">
-          <button className="menu-button" type="button" aria-label="Open or close the menu" onClick={() => setMenuOpen((open) => !open)}>☰</button>
-          <div className="breadcrumb">{tab} <span>/</span> {session.role}</div>
-          <div className="top-actions"><span className="online-label"><span className="status-dot" /> Connected</span></div>
-        </header>
-        <section className={tab === 'Results' ? 'content-wrap results-print-scope' : 'content-wrap'}>
-          {notice && <div className="toast">✓ {notice}</div>}
-          {activeExam
-            ? <TimedExamRunner exam={activeExam} questions={examQuestions} selectedAnswers={selectedAnswers} setSelectedAnswers={setSelectedAnswers} submitted={submitted} submit={confirmSubmit} exit={() => { setActiveExam(null); setSubmitted(false); setSelectedAnswers({}) }} />
-            : <>
-              <div className="intro">
-                <div>
-                  <p className="eyebrow">{isAdmin ? 'Administrator console' : isTeacher ? 'Teacher workspace' : 'Student portal'}</p>
-                  <h1>{isAdmin ? `${greeting()}, ${firstName}.` : `Welcome back, ${firstName}.`}</h1>
-                  <p className="intro-copy">{isAdmin ? 'Manage your people, exams, schedules, and published results.' : isTeacher ? 'Prepare subject questions one step at a time.' : 'Your exam schedule is ready when you are.'}</p>
-                </div>
-                {isAdmin && <button className="primary-button" onClick={() => { setTab('Schedule'); setShowExamForm(true) }}>+ Create exam</button>}
-                {isTeacher && <button className="primary-button" onClick={() => setTab('Questions')}>+ Set questions</button>}
-                {isStudent && <button className="primary-button" onClick={() => { const next = data.exams.find((exam) => exam.status === 'Scheduled' && !exam.taken); setTab('My exams'); if (next) beginExam(next); else showNotice('No exam is available to start right now.') }}>Enter exam →</button>}
+    <DashboardShell role={session.role} centre={centre} userName={session.name} detail={isStudent ? session.classSection : undefined} items={navItems} tab={tab} onTab={(item) => setTab(item as Tab)} onLogout={() => void logoutClicked()} menuOpen={menuOpen} onMenu={setMenuOpen}>
+      <section className={tab === 'Results' ? 'content-wrap results-print-scope' : 'content-wrap'}>
+        {notice && <div className="toast">✓ {notice}</div>}
+        {activeExam
+          ? <TimedExamRunner exam={activeExam} questions={examQuestions} selectedAnswers={selectedAnswers} setSelectedAnswers={setSelectedAnswers} submitted={submitted} submit={confirmSubmit} exit={() => { setActiveExam(null); setSubmitted(false); setSelectedAnswers({}) }} />
+          : <>
+            <div className="intro">
+              <div>
+                <p className="eyebrow">{isAdmin ? 'Administrator console' : isTeacher ? 'Teacher workspace' : 'Student portal'}</p>
+                <h1>{isAdmin ? `${greeting()}, ${firstName}.` : `Welcome back, ${firstName}.`}</h1>
+                <p className="intro-copy">{isAdmin ? 'Manage your people, exams, schedules, and published results.' : isTeacher ? 'Prepare subject questions one step at a time.' : 'Your exam schedule is ready when you are.'}</p>
               </div>
-              {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} token={token} showNotice={showNotice} />}
-              {tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
-              {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} classes={Array.from(new Set(data.users.filter((account) => account.role === 'Student' && account.classSection).map((account) => account.classSection as string)))} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
-              {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} aiReady={data.aiReady} aiRemaining={data.aiRemaining} />}
-              {tab === 'My exams' && <ExamList exams={data.exams} student={isStudent} centre={centre} start={(exam) => { beginExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}
-              {tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} approve={approveSubject} deleteSubject={deleteSubject} />}
-              {tab === 'Results' && isAdmin && <Results results={data.results} />}
-              {tab === 'Billing' && isAdmin && (data.offline ? <OfflineBilling token={token} showNotice={showNotice} refresh={refresh} /> : <Billing token={token} showNotice={showNotice} refresh={refresh} />)}
-              {tab === 'Profile' && !isStudent && <Profile session={session} token={token} showNotice={showNotice} />}
-            </>}
-        </section>
-      </main>
-      <div className="sidebar-backdrop" onClick={() => setMenuOpen(false)} />
-    </div>
+              {isAdmin && <button className="primary-button" onClick={() => { setTab('Schedule'); setShowExamForm(true) }}>+ Create exam</button>}
+              {isTeacher && <button className="primary-button" onClick={() => setTab('Questions')}>+ Set questions</button>}
+              {isStudent && <button className="primary-button" onClick={() => { const next = data.exams.find((exam) => exam.status === 'Scheduled' && !exam.taken); setTab('My exams'); if (next) beginExam(next); else showNotice('No exam is available to start right now.') }}>Enter exam →</button>}
+            </div>
+            {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} token={token} showNotice={showNotice} />}
+            {tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
+            {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} classes={Array.from(new Set(data.users.filter((account) => account.role === 'Student' && account.classSection).map((account) => account.classSection as string)))} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
+            {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} aiReady={data.aiReady} aiRemaining={data.aiRemaining} />}
+            {tab === 'My exams' && <ExamList exams={data.exams} student={isStudent} centre={centre} start={(exam) => { beginExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}
+            {tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} approve={approveSubject} deleteSubject={deleteSubject} />}
+            {tab === 'Results' && isAdmin && <Results results={data.results} />}
+            {tab === 'Billing' && isAdmin && (data.offline ? <OfflineBilling token={token} showNotice={showNotice} refresh={refresh} /> : <Billing token={token} showNotice={showNotice} refresh={refresh} />)}
+            {tab === 'Profile' && !isStudent && <Profile session={session} token={token} showNotice={showNotice} />}
+          </>}
+      </section>
+    </DashboardShell>
   )
 }
 
