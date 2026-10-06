@@ -1,8 +1,9 @@
 /* Creator console. Everything is prefixed cx- so it never clashes with the rest of the app. */
-.cx { --g900: #0c2a18; --g800: #123a22; --g700: #17492a; --g600: #1f6137; --g100: #e4efe7; --g50: #f1f6f2; --gold: #c99a2e; --gold-soft: #f8eecf; --bg: #f3f5f0; --text: #172a1e; --muted: #667a6d; --line: #e2e8df; --red: #b3261e; --red-soft: #fdecea; --amber: #8a6410; --amber-soft: #fcf1d0; --shadow: 0 1px 2px rgba(16, 40, 26, 0.06), 0 8px 24px rgba(16, 40, 26, 0.06);
+.cx, .cx-login { --g900: #0c2a18; --g800: #123a22; --g700: #17492a; --g600: #1f6137; --g100: #e4efe7; --g50: #f1f6f2; --gold: #c99a2e; --gold-soft: #f8eecf; --bg: #f3f5f0; --text: #172a1e; --muted: #667a6d; --line: #e2e8df; --red: #b3261e; --red-soft: #fdecea; --amber: #8a6410; --amber-soft: #fcf1d0; --shadow: 0 1px 2px rgba(16, 40, 26, 0.06), 0 8px 24px rgba(16, 40, 26, 0.06); }
+.cx {
   display: grid; grid-template-columns: 252px minmax(0, 1fr); min-height: 100vh; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
-.cx *, .cx *::before, .cx *::after { box-sizing: border-box; }
-.cx button { font-family: inherit; }
+.cx *, .cx *::before, .cx *::after, .cx-login *, .cx-login *::before, .cx-login *::after { box-sizing: border-box; }
+.cx button, .cx-login button { font-family: inherit; }
 
 /* sidebar */
 .cx-side { position: sticky; top: 0; height: 100vh; padding: 22px 14px; background: linear-gradient(180deg, var(--g800), var(--g900)); color: #e8f0ea; display: flex; flex-direction: column; gap: 4px; }
