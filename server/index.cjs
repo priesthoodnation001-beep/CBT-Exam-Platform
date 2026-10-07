@@ -2,6 +2,7 @@ const express = require('express')
 const fs = require('fs')
 const os = require('os')
 const createSync = require('./sync.cjs')
+const createSupport = require('./support.cjs')
 const path = require('path')
 const crypto = require('crypto')
 const initSqlJs = require('sql.js')
@@ -32,6 +33,7 @@ const app = express()
 const attempts = new Map()
 let db
 let sync
+let support
 
 app.set('trust proxy', 1)
 app.use('/api/sync', express.json({ limit: '25mb' }))
@@ -1106,7 +1108,8 @@ app.get('/api/creator/overview', creatorAuth, (_request, response) => {
   response.json({
     schools,
     totals: { schools: schools.length, students: schools.reduce((sum, school) => sum + school.students, 0), creditsHeld: schools.reduce((sum, school) => sum + school.credits, 0), paymentsCount: Number(paid.n), revenueNaira: Number(paid.kobo) / 100 },
-    paymentsReady: Boolean(PAYSTACK_SECRET)
+    paymentsReady: Boolean(PAYSTACK_SECRET),
+    supportUnread: support.creatorUnread()
   })
 })
 
@@ -1151,6 +1154,8 @@ app.post('/api/creator/schools/:id/delete', creatorAuth, (request, response) => 
   db.run('BEGIN')
   try {
     db.run('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE school_id = ?)', [school.id])
+    db.run('DELETE FROM support_messages WHERE ticket_id IN (SELECT id FROM support_tickets WHERE school_id = ?)', [school.id])
+    db.run('DELETE FROM support_tickets WHERE school_id = ?', [school.id])
     for (const table of ['submissions', 'questions', 'exams', 'subject_settings', 'question_drafts', 'last_seen', 'tombstones', 'credit_ledger', 'users']) db.run(`DELETE FROM ${table} WHERE school_id = ?`, [school.id])
     db.run('DELETE FROM settings WHERE key LIKE ?', [`${school.id}:%`])
     db.run('DELETE FROM schools WHERE id = ?', [school.id])
@@ -1206,6 +1211,34 @@ app.post('/api/creator/payments/:reference/dismiss', creatorAuth, (request, resp
   response.json({ ok: true })
 })
 
+/* ---------- support messages: an admin writes to the creator ---------- */
+
+const sendResult = (response, result) => response.status(result.status).json(result.body)
+
+// On a school computer the admin's messages are passed on to the website, where the creator reads them.
+app.use('/api/support', authenticate, requireRole('Admin'), async (request, response, next) => {
+  if (!OFFLINE) return next()
+  try {
+    const schoolId = request.user.schoolId
+    const token = getSetting(schoolId, 'online_token')
+    if (!token) return response.status(409).json({ error: 'To message support, connect this computer to the internet and sign in as the admin once.' })
+    const result = await onlineFetch(request.originalUrl, { method: request.method, headers: { Authorization: `Bearer ${token}` }, ...(request.method === 'GET' ? {} : { body: JSON.stringify(request.body || {}) }) })
+    if (result.status === 401) { dropSettings(schoolId); return response.status(409).json({ error: 'Your online sign-in expired. Sign in again with internet to reconnect.' }) }
+    response.status(result.status).json(result.body)
+  } catch (error) { offlineFailure(response, error, 'Could not reach support.') }
+})
+
+app.get('/api/support/tickets', authenticate, requireRole('Admin'), (request, response) => sendResult(response, support.adminList(request.user.schoolId)))
+app.post('/api/support/tickets', authenticate, requireRole('Admin'), (request, response) => sendResult(response, support.adminCreate(request.user, request.body)))
+app.get('/api/support/tickets/:id', authenticate, requireRole('Admin'), (request, response) => sendResult(response, support.adminGet(request.user, request.params.id)))
+app.post('/api/support/tickets/:id/messages', authenticate, requireRole('Admin'), (request, response) => sendResult(response, support.adminReply(request.user, request.params.id, request.body)))
+app.post('/api/support/tickets/:id/resolve', authenticate, requireRole('Admin'), (request, response) => sendResult(response, support.adminResolve(request.user, request.params.id)))
+
+app.get('/api/creator/support', creatorAuth, (_request, response) => sendResult(response, support.creatorList()))
+app.get('/api/creator/support/:id', creatorAuth, (request, response) => sendResult(response, support.creatorGet(request.params.id)))
+app.post('/api/creator/support/:id/reply', creatorAuth, (request, response) => sendResult(response, support.creatorReply(request.params.id, request.body)))
+app.post('/api/creator/support/:id/status', creatorAuth, (request, response) => sendResult(response, support.creatorStatus(request.params.id, request.body?.status)))
+
 app.get('/api/creator/log', creatorAuth, (_request, response) => {
   response.json({ log: rows('SELECT at, action, details FROM creator_log ORDER BY at DESC LIMIT 60') })
 })
@@ -1239,6 +1272,8 @@ async function start() {
   db.run('CREATE TABLE IF NOT EXISTS credit_ledger (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, change INTEGER NOT NULL, reason TEXT NOT NULL, reference TEXT, created_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS payments (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, amount_kobo INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS support_tickets (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, user_id TEXT NOT NULL, user_name TEXT NOT NULL, subject TEXT NOT NULL, category TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, admin_unread INTEGER NOT NULL DEFAULT 0, creator_unread INTEGER NOT NULL DEFAULT 1)')
+  db.run('CREATE TABLE IF NOT EXISTS support_messages (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS creator_sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS creator_log (id TEXT PRIMARY KEY, at TEXT NOT NULL, action TEXT NOT NULL, details TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS last_seen (user_id TEXT PRIMARY KEY, school_id TEXT NOT NULL, seen_at TEXT NOT NULL)')
@@ -1249,6 +1284,7 @@ async function start() {
   for (const column of ['email TEXT', 'credits INTEGER NOT NULL DEFAULT 0']) {
     try { db.run(`ALTER TABLE schools ADD COLUMN ${column}`) } catch { /* column already exists */ }
   }
+  support = createSupport({ rows, run })
   sync = createSync({ rows, exec: (sql, values) => db.run(sql, values), persist })
   sync.migrate()
   if (!OFFLINE) for (const school of rows('SELECT id FROM schools WHERE id NOT IN (SELECT DISTINCT school_id FROM credit_ledger)')) addCredits(school.id, STARTER_CREDITS, 'Free starter credits')

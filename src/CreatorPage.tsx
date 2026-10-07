@@ -10,8 +10,11 @@ type Overview = { schools: School[]; totals: { schools: number; students: number
 type Payment = { reference: string; school: string; credits: number; amountNaira: number; createdAt: string; paidAt: string | null; status: string }
 type Detail = { school: { id: string; name: string; slug: string; email: string | null }; accounts: { id: string; role: string; name: string; username: string | null }[]; history: { change: number; reason: string; created_at: string }[] }
 type LogEntry = { at: string; action: string; details: string }
-type Tab = 'Schools' | 'Payments' | 'Activity'
+type Tab = 'Schools' | 'Payments' | 'Support' | 'Activity'
 type Filter = 'All' | 'Paid' | 'Pending' | 'Abandoned'
+type SupportTicket = { id: string; subject: string; category: string; status: string; updatedAt: string; unread: number; school: string; from_name: string; last: string | null }
+type SupportThread = { ticket: { id: string; subject: string; category: string; status: string; school: string; from: string }; messages: { id: string; sender: 'admin' | 'creator'; body: string; createdAt: string }[] }
+type SupportFilter = 'All' | 'Needs reply' | 'Answered' | 'Resolved'
 
 const TOKEN_KEY = 'timpriest-creator'
 const COLORS = ['#1f6137', '#2a5ea8', '#a8325b', '#8a6410', '#6a3fa0', '#0f7b7b']
@@ -27,7 +30,9 @@ const ICONS = {
   refresh: 'M20 11a8 8 0 0 0-14-4 M4 4v4h4 M4 13a8 8 0 0 0 14 4 M20 20v-4h-4',
   logout: 'M9 4H5v16h4 M16 8l4 4-4 4 M20 12H9',
   search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z M20 20l-4-4',
-  close: 'M6 6l12 12 M18 6L6 18'
+  close: 'M6 6l12 12 M18 6L6 18',
+  chat: 'M4 5h16v11H9l-5 4V5z M8 9h8 M8 12.5h5',
+  send: 'M4 12l16-8-6 16-3-7-7-1z'
 }
 
 function Icon({ name, size = 20 }: { name: keyof typeof ICONS; size?: number }) {
@@ -57,6 +62,10 @@ export default function CreatorPage() {
   const [overview, setOverview] = useState<Overview | null>(null)
   const [payments, setPayments] = useState<Payment[]>([])
   const [log, setLog] = useState<LogEntry[]>([])
+  const [tickets, setTickets] = useState<SupportTicket[]>([])
+  const [supportFilter, setSupportFilter] = useState<SupportFilter>('All')
+  const [thread, setThread] = useState<SupportThread | null>(null)
+  const [replyText, setReplyText] = useState('')
   const [detail, setDetail] = useState<Detail | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -80,12 +89,13 @@ export default function CreatorPage() {
   }
 
   const loadAll = async () => {
-    const [summary, paymentList, activity] = await Promise.all([
+    const [summary, paymentList, activity, support] = await Promise.all([
       call<Overview>('/overview', token),
       call<{ payments: Payment[] }>('/payments', token),
-      call<{ log: LogEntry[] }>('/log', token)
+      call<{ log: LogEntry[] }>('/log', token),
+      call<{ tickets: SupportTicket[] }>('/support', token)
     ])
-    setOverview(summary); setPayments(paymentList.payments); setLog(activity.log)
+    setOverview(summary); setPayments(paymentList.payments); setLog(activity.log); setTickets(support.tickets)
   }
 
   const openSchool = async (id: string) => {
@@ -94,6 +104,18 @@ export default function CreatorPage() {
   }
 
   useEffect(() => { if (token) void guard(loadAll) }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // new messages from schools appear by themselves, and the browser tab shows how many are waiting
+  const waiting = tickets.reduce((sum, ticket) => sum + Number(ticket.unread || 0), 0)
+  useEffect(() => {
+    if (!token) return
+    const interval = window.setInterval(() => { call<{ tickets: SupportTicket[] }>('/support', token).then((result) => setTickets(result.tickets)).catch(() => undefined) }, 30000)
+    return () => window.clearInterval(interval)
+  }, [token])
+  useEffect(() => {
+    document.title = waiting > 0 ? `(${waiting}) Creator console` : 'Creator console'
+    return () => { document.title = 'TIMPRIEST EDU' }
+  }, [waiting])
 
   // messages fade away by themselves
   useEffect(() => {
@@ -155,6 +177,33 @@ export default function CreatorPage() {
     void guard(async () => { await call(`/payments/${encodeURIComponent(reference)}/dismiss`, token, { method: 'POST', body: '{}' }); setMessage('Marked as abandoned.'); await loadAll() })
   }
 
+  const openTicket = (id: string) => void guard(async () => {
+    setThread(await call<SupportThread>(`/support/${id}`, token)); setReplyText('')
+    setTickets((await call<{ tickets: SupportTicket[] }>('/support', token)).tickets)
+  })
+
+  const sendReply = (event: FormEvent<HTMLFormElement>, resolve: boolean) => {
+    event.preventDefault()
+    if (!thread) return
+    void guard(async () => {
+      await call(`/support/${thread.ticket.id}/reply`, token, { method: 'POST', body: JSON.stringify({ body: replyText, resolve }) })
+      setReplyText(''); setMessage(resolve ? 'Reply sent and marked as resolved.' : 'Reply sent.')
+      setThread(await call<SupportThread>(`/support/${thread.ticket.id}`, token))
+      setTickets((await call<{ tickets: SupportTicket[] }>('/support', token)).tickets)
+    })
+  }
+
+  const setTicketStatus = (status: string) => {
+    if (!thread) return
+    void guard(async () => {
+      await call(`/support/${thread.ticket.id}/status`, token, { method: 'POST', body: JSON.stringify({ status }) })
+      setThread(await call<SupportThread>(`/support/${thread.ticket.id}`, token))
+      setTickets((await call<{ tickets: SupportTicket[] }>('/support', token)).tickets)
+    })
+  }
+
+  const shownTickets = tickets.filter((ticket) => supportFilter === 'All' || (supportFilter === 'Needs reply' ? ticket.status === 'open' : supportFilter === 'Answered' ? ticket.status === 'answered' : ticket.status === 'resolved'))
+
   const shownSchools = useMemo(() => {
     const words = query.trim().toLowerCase()
     return (overview?.schools || []).filter((school) => !words || `${school.name} ${school.slug} ${school.email || ''}`.toLowerCase().includes(words))
@@ -182,6 +231,7 @@ export default function CreatorPage() {
   const titles: Record<Tab, [string, string]> = {
     Schools: ['Schools', 'Everyone using TIMPRIEST EDU, and their credits.'],
     Payments: ['Payments', 'Check what was paid, and sort out payments that did not finish.'],
+    Support: ['Support', 'Messages from school admins. Reply here and they see it on their dashboard.'],
     Activity: ['Activity', 'A record of everything you have done in this console.']
   }
   const currentCredits = detail ? (overview?.schools.find((school) => school.id === detail.school.id)?.credits ?? 0) : 0
@@ -193,6 +243,7 @@ export default function CreatorPage() {
         <nav className="cx-nav">
           <button className={tab === 'Schools' ? 'active' : ''} onClick={() => setTab('Schools')}><Icon name="schools" />Schools</button>
           <button className={tab === 'Payments' ? 'active' : ''} onClick={() => setTab('Payments')}><Icon name="payments" />Payments{pendingCount > 0 ? ` (${pendingCount})` : ''}</button>
+          <button className={tab === 'Support' ? 'active' : ''} onClick={() => setTab('Support')}><Icon name="chat" />Support{waiting > 0 && <span className="cx-badge">{waiting}</span>}</button>
           <button className={tab === 'Activity' ? 'active' : ''} onClick={() => setTab('Activity')}><Icon name="activity" />Activity</button>
         </nav>
         <div className="cx-side-foot"><button onClick={signOut}><Icon name="logout" />Sign out</button></div>
@@ -261,6 +312,24 @@ export default function CreatorPage() {
                     </article>
                   )
                 })}
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === 'Support' && (
+          <>
+            <div className="cx-pills">{(['All', 'Needs reply', 'Answered', 'Resolved'] as SupportFilter[]).map((name) => <button key={name} className={supportFilter === name ? 'active' : ''} onClick={() => setSupportFilter(name)}>{name}</button>)}</div>
+            {shownTickets.length === 0 ? <div className="cx-empty">{tickets.length === 0 ? 'No messages yet. When a school admin writes to you, it will appear here.' : 'No messages in this group.'}</div> : (
+              <div className="cx-list">
+                {shownTickets.map((ticket) => (
+                  <button className={`cx-ticket ${ticket.unread ? 'unread' : ''}`} key={ticket.id} onClick={() => openTicket(ticket.id)}>
+                    <div className="cx-ticket-top"><strong>{ticket.school}</strong>{ticket.unread > 0 && <span className="cx-badge inline">New</span>}<small>{when(ticket.updatedAt)}</small></div>
+                    <div className="cx-ticket-subject">{ticket.subject}<span className="cx-chip role">{ticket.category}</span></div>
+                    <span className="cx-ticket-snippet">{ticket.last}</span>
+                    <span className={`cx-chip ${ticket.status === 'resolved' ? 'paid' : ticket.status === 'answered' ? 'role' : 'pending'}`}>{ticket.status === 'open' ? 'Needs reply' : ticket.status === 'answered' ? 'Answered' : 'Resolved'}</span>
+                  </button>
+                ))}
               </div>
             )}
           </>
@@ -335,6 +404,36 @@ export default function CreatorPage() {
                 </form>
               </div>
             </details>
+          </aside>
+        </div>
+      )}
+
+      {thread && (
+        <div className="cx-drawer-wrap">
+          <div className="cx-backdrop" onClick={() => setThread(null)} />
+          <aside className="cx-drawer" role="dialog" aria-label={thread.ticket.subject}>
+            <div className="cx-drawer-head">
+              <div className="cx-avatar" style={{ background: colorFor(thread.ticket.school) }}>{initials(thread.ticket.school)}</div>
+              <div><h2>{thread.ticket.subject}</h2><p>{thread.ticket.school} · from {thread.ticket.from} · {thread.ticket.category}</p></div>
+              <button className="cx-btn ghost" onClick={() => setThread(null)} aria-label="Close"><Icon name="close" size={20} /></button>
+            </div>
+            <div className="cx-msgs">
+              {thread.messages.map((item) => (
+                <div key={item.id} className={`cx-bubble ${item.sender}`}>
+                  <span>{item.sender === 'admin' ? thread.ticket.from : 'You (creator)'}</span>
+                  <p>{item.body}</p>
+                  <small>{when(item.createdAt)}</small>
+                </div>
+              ))}
+            </div>
+            <form className="cx-replybox" onSubmit={(event) => sendReply(event, false)}>
+              <textarea className="cx-input" rows={4} value={replyText} onChange={(event) => setReplyText(event.target.value)} placeholder="Write your reply to the school admin" maxLength={2000} required />
+              <div className="cx-reply-actions">
+                {thread.ticket.status === 'resolved' ? <button type="button" className="cx-btn small" onClick={() => setTicketStatus('open')} disabled={busy}>Reopen</button> : <button type="button" className="cx-btn small" onClick={() => setTicketStatus('resolved')} disabled={busy}>Mark resolved</button>}
+                <button className="cx-btn small" type="button" disabled={busy || !replyText.trim()} onClick={(event) => sendReply(event as unknown as FormEvent<HTMLFormElement>, true)}>Send and resolve</button>
+                <button className="cx-btn primary small" type="submit" disabled={busy}><Icon name="send" size={16} />Send reply</button>
+              </div>
+            </form>
           </aside>
         </div>
       )}

@@ -11,6 +11,7 @@ import SubjectQuestionWizard from './SubjectQuestionWizard'
 import TimedExamRunner from './TimedExamRunner'
 import CreatorPage from './CreatorPage'
 import DashboardShell from './DashboardShell'
+import SupportWidget from './SupportWidget'
 import { RoleChooser, RoleSignIn } from './RoleSignIn'
 import { API_BASE } from './apiBase'
 import './App.css'
@@ -310,6 +311,7 @@ function AppInner() {
   const examQuestions = activeExam ? data.questions.filter((question) => question.examId === activeExam.id || (!question.examId && question.subject === activeExam.subject)) : []
 
   return (
+    <>
     <DashboardShell role={session.role} centre={centre} userName={session.name} detail={isStudent ? session.classSection : undefined} items={navItems} tab={tab} onTab={(item) => setTab(item as Tab)} onLogout={() => void logoutClicked()} menuOpen={menuOpen} onMenu={setMenuOpen}>
       <section className={tab === 'Results' ? 'content-wrap results-print-scope' : 'content-wrap'}>
         {notice && <div className="toast">✓ {notice}</div>}
@@ -338,6 +340,8 @@ function AppInner() {
           </>}
       </section>
     </DashboardShell>
+    {isAdmin && <SupportWidget token={token} showNotice={showNotice} />}
+    </>
   )
 }
 

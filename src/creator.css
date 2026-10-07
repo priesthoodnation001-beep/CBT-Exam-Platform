@@ -186,3 +186,25 @@
   .cx-pay-actions { grid-column: 1 / -1; justify-content: flex-start; }
   .cx-form-row { grid-template-columns: 1fr; }
 }
+
+/* support inbox */
+.cx-badge { margin-left: auto; min-width: 22px; padding: 1px 8px; border-radius: 999px; background: #d33; color: #fff; font-size: 0.72rem; font-weight: 700; text-align: center; }
+.cx-badge.inline { margin-left: 0; }
+.cx-ticket { text-align: left; display: grid; gap: 8px; width: 100%; background: #fff; border: 1px solid transparent; border-radius: 16px; padding: 16px 18px; box-shadow: var(--shadow); cursor: pointer; font: inherit; color: var(--text); transition: transform 0.12s, box-shadow 0.15s; }
+.cx-ticket:hover { transform: translateY(-1px); box-shadow: 0 2px 4px rgba(16, 40, 26, 0.08), 0 12px 28px rgba(16, 40, 26, 0.1); }
+.cx-ticket.unread { border-color: var(--gold); background: #fffbee; }
+.cx-ticket-top { display: flex; align-items: center; gap: 10px; }
+.cx-ticket-top small { margin-left: auto; color: var(--muted); }
+.cx-ticket-subject { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-weight: 600; }
+.cx-ticket-snippet { color: var(--muted); font-size: 0.9rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.cx-ticket .cx-chip { justify-self: start; }
+.cx-msgs { padding: 18px 22px; display: grid; gap: 12px; background: #f6f8f4; align-content: start; min-height: 240px; }
+.cx-bubble { max-width: 88%; padding: 11px 14px; border-radius: 16px; display: grid; gap: 3px; }
+.cx-bubble span { font-size: 0.74rem; font-weight: 700; opacity: 0.75; }
+.cx-bubble p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.cx-bubble small { font-size: 0.72rem; opacity: 0.65; }
+.cx-bubble.admin { justify-self: start; background: #fff; border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+.cx-bubble.creator { justify-self: end; background: var(--g700); color: #fff; border-bottom-right-radius: 5px; }
+.cx-replybox { padding: 16px 22px 24px; display: grid; gap: 10px; border-top: 1px solid var(--line); }
+.cx-reply-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.cx-reply-actions .cx-btn:first-child { margin-right: auto; }
