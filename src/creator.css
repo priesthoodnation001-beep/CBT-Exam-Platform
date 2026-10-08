@@ -208,3 +208,16 @@
 .cx-replybox { padding: 16px 22px 24px; display: grid; gap: 10px; border-top: 1px solid var(--line); }
 .cx-reply-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .cx-reply-actions .cx-btn:first-child { margin-right: auto; }
+
+/* add school and link tools */
+.cx-add { margin-left: auto; }
+.cx-foot-actions { display: flex; align-items: center; gap: 6px; }
+.cx-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cx-linkbox { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--g50); border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.cx-linkbox code { font-size: 0.9rem; word-break: break-all; color: var(--g700); font-weight: 700; }
+.cx-details { background: #f6f8f4; border: 1px dashed #b8c9bb; border-radius: 14px; padding: 14px 16px; font-family: inherit; font-size: 0.9rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 14px; }
+.cx-field small { font-weight: 400; color: var(--muted); }
+@media (max-width: 880px) { .cx-two { grid-template-columns: 1fr; } }
+.cx-school-foot { flex-wrap: wrap; row-gap: 8px; }
+.cx-foot-actions .cx-btn { white-space: nowrap; }
+.cx-section > small { display: block; margin-top: 12px; }

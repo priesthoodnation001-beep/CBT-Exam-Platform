@@ -123,13 +123,69 @@ function loadUser(id) {
   ).at(0)
 }
 
+// Link names are kept short: filler words are dropped and the name is cut at a word boundary (18 characters at most).
+const SLUG_FILLER = new Set(['the', 'of', 'and', 'ltd', 'limited', 'plc', 'nig', 'nigeria'])
+const SLUG_MAX = 18
+
+function shortBase(name) {
+  const words = String(name).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean)
+  const useful = words.filter((word) => !SLUG_FILLER.has(word))
+  const list = useful.length ? useful : words
+  let slug = ''
+  for (const word of list) {
+    const next = slug ? `${slug}-${word}` : word
+    if (next.length > SLUG_MAX) break
+    slug = next
+  }
+  return slug || (list[0] || 'school').slice(0, SLUG_MAX)
+}
+
+// A link name is taken if another school uses it now, or used it before (old links keep working after a rename).
+function slugTaken(slug, exceptSchoolId = '') {
+  return rows('SELECT id FROM schools WHERE slug = ? AND id != ?', [slug, exceptSchoolId]).length > 0
+    || rows('SELECT school_id FROM school_aliases WHERE slug = ? AND school_id != ?', [slug, exceptSchoolId]).length > 0
+}
+
 function makeSlug(name) {
-  let base = String(name).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '')
+  let base = shortBase(name)
   if (!base || RESERVED_SLUGS.has(base)) base = `${base || 'school'}-school`
   let slug = base
   let count = 2
-  while (rows('SELECT id FROM schools WHERE slug = ?', [slug]).length) slug = `${base}-${count++}`
+  while (slugTaken(slug)) slug = `${base}-${count++}`
   return slug
+}
+
+// For a link name typed by hand.
+function checkSlug(input, exceptSchoolId = '') {
+  const slug = String(input || '').trim().toLowerCase()
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug) || slug.length < 3 || slug.length > 30) return { error: 'The link name must be 3 to 30 characters: small letters, numbers and single dashes only.' }
+  if (RESERVED_SLUGS.has(slug)) return { error: 'That link name is reserved. Choose another one.' }
+  if (slugTaken(slug, exceptSchoolId)) return { error: 'That link name is already used by another school.' }
+  return { slug }
+}
+
+// An old link keeps working after a rename: it points at the school's current link name.
+function resolveSlug(slug) {
+  const wanted = String(slug || '').toLowerCase()
+  if (!wanted || rows('SELECT id FROM schools WHERE slug = ?', [wanted]).length) return wanted
+  return rows('SELECT s.slug FROM school_aliases a JOIN schools s ON s.id = a.school_id WHERE a.slug = ?', [wanted]).at(0)?.slug || wanted
+}
+
+function createSchoolWithAdmin({ schoolName, name, username, password, email, slug, starterCredits }) {
+  const trimmedName = String(schoolName || '').trim()
+  if (trimmedName.length < 2) return { error: 'Enter the school name.', status: 400 }
+  const cleanEmail = String(email || '').trim().toLowerCase()
+  if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) return { error: 'Enter a valid email address.', status: 400 }
+  if (!name || !username || !password || String(password).length < 6) return { error: 'Name, username, and a password of at least 6 characters are required.', status: 400 }
+  if (rows('SELECT id FROM users WHERE lower(username) = lower(?) AND deleted = 0', [String(username).trim()]).length) return { error: 'That username is already in use. Choose another one.', status: 409 }
+  let finalSlug
+  if (slug) { const checked = checkSlug(slug); if (checked.error) return { error: checked.error, status: 400 }; finalSlug = checked.slug } else finalSlug = makeSlug(trimmedName)
+  const schoolId = crypto.randomUUID()
+  run('INSERT INTO schools (id, name, slug, created_at, email, credits) VALUES (?, ?, ?, ?, ?, 0)', [schoolId, trimmedName, finalSlug, new Date().toISOString(), cleanEmail || null])
+  const credits = Number.isFinite(Number(starterCredits)) ? Math.max(0, Math.min(1000, Math.floor(Number(starterCredits)))) : STARTER_CREDITS
+  if (credits > 0) addCredits(schoolId, credits, 'Free starter credits')
+  run("INSERT INTO users (id, school_id, role, name, username, password_hash, student_id, class_section, deleted) VALUES (?, ?, 'Admin', ?, ?, ?, NULL, NULL, 0)", [crypto.randomUUID(), schoolId, String(name).trim(), String(username).trim(), hashPassword(String(password))])
+  return { school: { id: schoolId, name: trimmedName, slug: finalSlug } }
 }
 
 /* ---------- credits & payments ---------- */
@@ -286,7 +342,7 @@ function requireRole(...roles) {
 app.get('/api/health', (_request, response) => response.json({ ok: true, database: 'SQLite', name: 'TIMPRIEST EDU' }))
 
 app.get('/api/schools/:slug', async (request, response) => {
-  const slug = String(request.params.slug).toLowerCase()
+  const slug = resolveSlug(request.params.slug)
   const school = rows('SELECT name, slug FROM schools WHERE slug = ?', [slug]).at(0)
   if (school) return response.json(school)
   if (OFFLINE) {
@@ -318,20 +374,15 @@ app.post('/api/register-admin', async (request, response) => {
     }
   }
   const { schoolName, name, username, password, email } = request.body || {}
-  if (!schoolName || String(schoolName).trim().length < 2) return response.status(400).json({ error: 'Enter your school name.' })
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) return response.status(400).json({ error: 'Enter a valid email address for payment receipts.' })
-  if (!name || !username || !password || String(password).length < 6) return response.status(400).json({ error: 'Name, username, and a password of at least 6 characters are required.' })
-  if (rows('SELECT id FROM users WHERE lower(username) = lower(?) AND deleted = 0', [String(username).trim()]).length) return response.status(409).json({ error: 'That username is already in use. Choose another one.' })
-  const schoolId = crypto.randomUUID()
-  const slug = makeSlug(schoolName)
-  run('INSERT INTO schools (id, name, slug, created_at, email, credits) VALUES (?, ?, ?, ?, ?, 0)', [schoolId, String(schoolName).trim(), slug, new Date().toISOString(), String(email).trim().toLowerCase()])
-  addCredits(schoolId, STARTER_CREDITS, 'Free starter credits')
-  run('INSERT INTO users (id, school_id, role, name, username, password_hash, student_id, class_section, deleted) VALUES (?, ?, \'Admin\', ?, ?, ?, NULL, NULL, 0)', [crypto.randomUUID(), schoolId, String(name).trim(), String(username).trim(), hashPassword(String(password))])
-  response.status(201).json({ school: { name: String(schoolName).trim(), slug } })
+  const created = createSchoolWithAdmin({ schoolName, name, username, password, email })
+  if (created.error) return response.status(created.status).json({ error: created.error })
+  response.status(201).json({ school: { name: created.school.name, slug: created.school.slug } })
 })
 
 app.post('/api/login', async (request, response) => {
-  const { role, identifier = '', password = '', schoolSlug = '' } = request.body || {}
+  const { role, identifier = '', password = '' } = request.body || {}
+  const schoolSlug = request.body?.schoolSlug ? resolveSlug(request.body.schoolSlug) : ''
   const id = String(identifier).trim()
   if (!['Admin', 'Teacher', 'Student'].includes(role) || !id) return response.status(400).json({ error: 'Enter your sign-in details.' })
   const key = `${request.ip}|${id.toLowerCase()}`
@@ -781,7 +832,7 @@ app.post('/api/sync', authenticate, requireRole('Admin'), (request, response) =>
     const stats = sync.applyChanges(schoolId, request.body?.changes, skew, { ledger: 'usage-only' })
     const serverTime = new Date().toISOString()
     const changes = sync.collectChanges(schoolId, String(request.body?.serverCursor || ''))
-    response.json({ serverTime, changes, stats })
+    response.json({ serverTime, changes, stats, school: rows('SELECT name, slug FROM schools WHERE id = ?', [schoolId]).at(0) })
   } catch (error) {
     console.error('sync failed', error)
     response.status(500).json({ error: 'Could not sync right now.' })
@@ -847,6 +898,15 @@ async function syncSchool(schoolId) {
   if (!result.ok || !result.body?.serverTime) return { error: result.body?.error || 'The website could not sync right now.', status: 502 }
   const skew = Date.parse(result.body.serverTime) - Date.parse(started) // how far this computer's clock is behind the website's
   const stats = sync.applyChanges(schoolId, result.body.changes, -skew)
+  const remote = result.body.school
+  if (remote?.slug) { // the creator renamed the school or its link: follow it, and keep the old link working here too
+    const local = rows('SELECT slug, name FROM schools WHERE id = ?', [schoolId]).at(0)
+    if (local && (local.slug !== remote.slug || local.name !== remote.name) && !rows('SELECT id FROM schools WHERE slug = ? AND id != ?', [remote.slug, schoolId]).length) {
+      if (local.slug !== remote.slug) run('INSERT OR REPLACE INTO school_aliases (slug, school_id) VALUES (?, ?)', [local.slug, schoolId])
+      run('UPDATE schools SET name = ?, slug = ? WHERE id = ?', [String(remote.name || local.name).slice(0, 200), remote.slug, schoolId])
+      putSetting(schoolId, 'online_slug', remote.slug)
+    }
+  }
   putSetting(schoolId, 'last_push', started)
   putSetting(schoolId, 'server_cursor', result.body.serverTime)
   putSetting(schoolId, 'last_sync_done', new Date().toISOString())
@@ -858,9 +918,14 @@ async function provisionFromOnline(token) {
   const info = await onlineFetch('/api/provision', { headers: { Authorization: `Bearer ${token}` } })
   const online = info.body?.school
   if (!info.ok || !online?.id) return { error: info.body?.error || 'Could not read the school from the website.' }
+  const known = rows('SELECT id, slug FROM schools WHERE id = ?', [online.id]).at(0)
   const existing = rows('SELECT id FROM schools WHERE slug = ?', [online.slug]).at(0)
   if (existing && existing.id !== online.id) return { error: 'A different school with this link already exists on this computer. Clear this computer\'s data or use another school name.' }
-  if (!existing) run('INSERT INTO schools (id, name, slug, created_at, email, credits) VALUES (?, ?, ?, ?, ?, 0)', [online.id, online.name, online.slug, new Date().toISOString(), online.email || null])
+  if (known && known.slug !== online.slug) {
+    run('INSERT OR REPLACE INTO school_aliases (slug, school_id) VALUES (?, ?)', [known.slug, online.id])
+    run('UPDATE schools SET name = ?, slug = ? WHERE id = ?', [online.name, online.slug, online.id])
+  }
+  if (!known) run('INSERT INTO schools (id, name, slug, created_at, email, credits) VALUES (?, ?, ?, ?, ?, 0)', [online.id, online.name, online.slug, new Date().toISOString(), online.email || null])
   putSetting(online.id, 'online_token', token)
   putSetting(online.id, 'online_slug', online.slug)
   putSetting(online.id, 'online_school_id', online.id)
@@ -1113,6 +1178,34 @@ app.get('/api/creator/overview', creatorAuth, (_request, response) => {
   })
 })
 
+// Create a school (with its admin) from the console, for example before handing the login details to a school.
+app.get('/api/creator/slug', creatorAuth, (request, response) => {
+  response.json({ slug: makeSlug(String(request.query?.name || '')) })
+})
+
+app.post('/api/creator/schools', creatorAuth, (request, response) => {
+  const body = request.body || {}
+  const created = createSchoolWithAdmin({ schoolName: body.schoolName, name: body.adminName, username: body.username, password: body.password, email: body.email, slug: body.slug || '', starterCredits: body.starterCredits === '' || body.starterCredits === undefined ? undefined : body.starterCredits })
+  if (created.error) return response.status(created.status).json({ error: created.error })
+  creatorLog('create-school', `Created ${created.school.name} (/${created.school.slug}) with admin ${String(body.username).trim()}.`)
+  response.status(201).json({ school: created.school, credits: creditBalance(created.school.id) })
+})
+
+// Change a school's link name. The old link keeps working.
+app.post('/api/creator/schools/:id/slug', creatorAuth, (request, response) => {
+  const school = rows('SELECT id, name, slug FROM schools WHERE id = ?', [request.params.id]).at(0)
+  if (!school) return response.status(404).json({ error: 'School not found.' })
+  const checked = checkSlug(request.body?.slug, school.id)
+  if (checked.error) return response.status(400).json({ error: checked.error })
+  if (checked.slug !== school.slug) {
+    run('INSERT OR REPLACE INTO school_aliases (slug, school_id) VALUES (?, ?)', [school.slug, school.id])
+    run('DELETE FROM school_aliases WHERE slug = ?', [checked.slug])
+    run('UPDATE schools SET slug = ? WHERE id = ?', [checked.slug, school.id])
+    creatorLog('rename-link', `Changed the link of ${school.name} from /${school.slug} to /${checked.slug}. The old link still works.`)
+  }
+  response.json({ slug: checked.slug })
+})
+
 app.get('/api/creator/schools/:id', creatorAuth, (request, response) => {
   const school = rows('SELECT id, name, slug, email FROM schools WHERE id = ?', [request.params.id]).at(0)
   if (!school) return response.status(404).json({ error: 'School not found.' })
@@ -1156,6 +1249,7 @@ app.post('/api/creator/schools/:id/delete', creatorAuth, (request, response) => 
     db.run('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE school_id = ?)', [school.id])
     db.run('DELETE FROM support_messages WHERE ticket_id IN (SELECT id FROM support_tickets WHERE school_id = ?)', [school.id])
     db.run('DELETE FROM support_tickets WHERE school_id = ?', [school.id])
+    db.run('DELETE FROM school_aliases WHERE school_id = ?', [school.id])
     for (const table of ['submissions', 'questions', 'exams', 'subject_settings', 'question_drafts', 'last_seen', 'tombstones', 'credit_ledger', 'users']) db.run(`DELETE FROM ${table} WHERE school_id = ?`, [school.id])
     db.run('DELETE FROM settings WHERE key LIKE ?', [`${school.id}:%`])
     db.run('DELETE FROM schools WHERE id = ?', [school.id])
@@ -1272,6 +1366,7 @@ async function start() {
   db.run('CREATE TABLE IF NOT EXISTS credit_ledger (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, change INTEGER NOT NULL, reason TEXT NOT NULL, reference TEXT, created_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS payments (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, amount_kobo INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS school_aliases (slug TEXT PRIMARY KEY, school_id TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS support_tickets (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, user_id TEXT NOT NULL, user_name TEXT NOT NULL, subject TEXT NOT NULL, category TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, admin_unread INTEGER NOT NULL DEFAULT 0, creator_unread INTEGER NOT NULL DEFAULT 1)')
   db.run('CREATE TABLE IF NOT EXISTS support_messages (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS creator_sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)')

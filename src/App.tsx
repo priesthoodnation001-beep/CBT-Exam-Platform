@@ -132,7 +132,13 @@ function AppInner() {
     setSchool(null); setSchoolError('')
     if (!schoolSlug) return
     api<School>(`/schools/${encodeURIComponent(schoolSlug)}`, null)
-      .then(setSchool)
+      .then((found) => {
+        setSchool(found)
+        if (found.slug && found.slug !== schoolSlug) { // the school's link was shortened or renamed: follow it
+          setRoute((current) => ({ ...current, slug: found.slug }))
+          if (!Capacitor.isNativePlatform()) window.history.replaceState(null, '', '/' + [found.slug, route.role?.toLowerCase()].filter(Boolean).join('/'))
+        }
+      })
       .catch(() => setSchoolError('This school link was not found. Check the address and try again.'))
   }, [schoolSlug])
 

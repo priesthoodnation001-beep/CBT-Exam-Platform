@@ -32,7 +32,9 @@ const ICONS = {
   search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z M20 20l-4-4',
   close: 'M6 6l12 12 M18 6L6 18',
   chat: 'M4 5h16v11H9l-5 4V5z M8 9h8 M8 12.5h5',
-  send: 'M4 12l16-8-6 16-3-7-7-1z'
+  send: 'M4 12l16-8-6 16-3-7-7-1z',
+  plus: 'M12 5v14 M5 12h14',
+  copy: 'M9 9h10v11H9z M5 15V4h10'
 }
 
 function Icon({ name, size = 20 }: { name: keyof typeof ICONS; size?: number }) {
@@ -66,6 +68,11 @@ export default function CreatorPage() {
   const [supportFilter, setSupportFilter] = useState<SupportFilter>('All')
   const [thread, setThread] = useState<SupportThread | null>(null)
   const [replyText, setReplyText] = useState('')
+  const [addOpen, setAddOpen] = useState(false)
+  const [form, setForm] = useState({ schoolName: '', slug: '', adminName: '', username: '', password: '', email: '', starter: '10' })
+  const [suggested, setSuggested] = useState('')
+  const [created, setCreated] = useState<{ name: string; slug: string; adminName: string; username: string; password: string; credits: number } | null>(null)
+  const [linkDraft, setLinkDraft] = useState('')
   const [detail, setDetail] = useState<Detail | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -100,7 +107,7 @@ export default function CreatorPage() {
 
   const openSchool = async (id: string) => {
     const result = await call<Detail>(`/schools/${id}`, token)
-    setDetail(result); setCreditChange(''); setCreditReason(''); setPasswordFor(''); setNewPassword(''); setConfirmSlug('')
+    setDetail(result); setCreditChange(''); setCreditReason(''); setPasswordFor(''); setNewPassword(''); setConfirmSlug(''); setLinkDraft(result.school.slug)
   }
 
   useEffect(() => { if (token) void guard(loadAll) }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -204,6 +211,52 @@ export default function CreatorPage() {
 
   const shownTickets = tickets.filter((ticket) => supportFilter === 'All' || (supportFilter === 'Needs reply' ? ticket.status === 'open' : supportFilter === 'Answered' ? ticket.status === 'answered' : ticket.status === 'resolved'))
 
+  const origin = window.location.origin
+  const linkOf = (slug: string) => `${origin}/${slug}`
+
+  const copyText = async (text: string, done: string) => {
+    try { await navigator.clipboard.writeText(text); setMessage(done) } catch { setMessage('Could not copy automatically. Select the text and copy it by hand.') }
+  }
+
+  const openAdd = () => { setForm({ schoolName: '', slug: '', adminName: '', username: '', password: '', email: '', starter: '10' }); setSuggested(''); setCreated(null); setAddOpen(true) }
+
+  // shows the short link the school name will get, before the school is created
+  useEffect(() => {
+    if (!addOpen || form.slug || form.schoolName.trim().length < 2) { setSuggested(''); return }
+    const timer = window.setTimeout(() => {
+      call<{ slug: string }>(`/slug?name=${encodeURIComponent(form.schoolName)}`, token).then((result) => setSuggested(result.slug)).catch(() => setSuggested(''))
+    }, 350)
+    return () => window.clearTimeout(timer)
+  }, [addOpen, form.schoolName, form.slug, token])
+
+  const makePassword = () => {
+    const letters = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789'
+    const bytes = crypto.getRandomValues(new Uint8Array(10))
+    setForm((current) => ({ ...current, password: Array.from(bytes, (byte) => letters[byte % letters.length]).join('') }))
+  }
+
+  const submitNewSchool = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    void guard(async () => {
+      const result = await call<{ school: { name: string; slug: string }; credits: number }>('/schools', token, { method: 'POST', body: JSON.stringify({ schoolName: form.schoolName, slug: form.slug.trim(), adminName: form.adminName, username: form.username, password: form.password, email: form.email, starterCredits: form.starter }) })
+      setCreated({ name: result.school.name, slug: result.school.slug, adminName: form.adminName, username: form.username, password: form.password, credits: result.credits })
+      await loadAll()
+    })
+  }
+
+  const detailsText = (info: { name: string; slug: string; username: string; password: string }) =>
+    `${info.name} on TIMPRIEST EDU\n\nAdmin sign-in: ${linkOf(info.slug)}/admin\nUsername: ${info.username}\nPassword: ${info.password}\n\nStudents sign in at: ${linkOf(info.slug)}/student\nTeachers sign in at: ${linkOf(info.slug)}/teacher\n\nPlease change your password after you sign in.`
+
+  const saveLink = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!detail) return
+    void guard(async () => {
+      const result = await call<{ slug: string }>(`/schools/${detail.school.id}/slug`, token, { method: 'POST', body: JSON.stringify({ slug: linkDraft }) })
+      setMessage(`The link is now ${linkOf(result.slug)}. The old link still works.`)
+      await openSchool(detail.school.id); await loadAll()
+    })
+  }
+
   const shownSchools = useMemo(() => {
     const words = query.trim().toLowerCase()
     return (overview?.schools || []).filter((school) => !words || `${school.name} ${school.slug} ${school.email || ''}`.toLowerCase().includes(words))
@@ -267,6 +320,7 @@ export default function CreatorPage() {
             <div className="cx-toolbar">
               <div className="cx-search"><Icon name="search" size={18} /><input className="cx-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by school name, link or email" /></div>
               <span className="cx-count">{shownSchools.length} of {overview.schools.length} schools</span>
+              <button className="cx-btn gold cx-add" onClick={openAdd}><Icon name="plus" size={17} />Add school</button>
             </div>
 
             {shownSchools.length === 0 ? <div className="cx-empty">{overview.schools.length === 0 ? 'No schools have registered yet.' : 'No school matches your search.'}</div> : (
@@ -284,7 +338,7 @@ export default function CreatorPage() {
                       <div><strong>{school.exams}</strong><span>Exams</span></div>
                       <div><strong>{school.results}</strong><span>Results</span></div>
                     </div>
-                    <div className="cx-school-foot"><small>Joined {new Date(school.created_at).toLocaleDateString([], { dateStyle: 'medium' })}</small><button className="cx-btn primary small" onClick={() => void guard(() => openSchool(school.id))}>Manage</button></div>
+                    <div className="cx-school-foot"><small>Joined {new Date(school.created_at).toLocaleDateString([], { dateStyle: 'medium' })}</small><div className="cx-foot-actions"><button className="cx-btn ghost small" onClick={() => void copyText(linkOf(school.slug), 'School link copied.')} title={linkOf(school.slug)}><Icon name="copy" size={15} />Copy link</button><button className="cx-btn primary small" onClick={() => void guard(() => openSchool(school.id))}>Manage</button></div></div>
                   </article>
                 ))}
               </div>
@@ -371,6 +425,17 @@ export default function CreatorPage() {
             </section>
 
             <section className="cx-section">
+              <h3>School link</h3>
+              <p>This is the address you give the school. Keep it short and easy to say.</p>
+              <div className="cx-linkbox"><code>{linkOf(detail.school.slug)}</code><button className="cx-btn small" type="button" onClick={() => void copyText(linkOf(detail.school.slug), 'School link copied.')}><Icon name="copy" size={15} />Copy</button></div>
+              <form className="cx-inline" onSubmit={saveLink}>
+                <input className="cx-input" value={linkDraft} onChange={(event) => setLinkDraft(event.target.value.toLowerCase())} placeholder="new link name, e.g. hisgrace" minLength={3} maxLength={30} required />
+                <button className="cx-btn primary small" type="submit" disabled={busy || linkDraft === detail.school.slug}>Change link</button>
+              </form>
+              <small style={{ color: '#667a6d' }}>Small letters, numbers and dashes only. The old link keeps working, so nothing already shared breaks.</small>
+            </section>
+
+            <section className="cx-section">
               <h3>Admins and teachers</h3>
               <p>Forgotten password? Set a new one here and give it to that person.</p>
               {detail.accounts.length === 0 && <p>No accounts yet.</p>}
@@ -404,6 +469,46 @@ export default function CreatorPage() {
                 </form>
               </div>
             </details>
+          </aside>
+        </div>
+      )}
+
+      {addOpen && (
+        <div className="cx-drawer-wrap">
+          <div className="cx-backdrop" onClick={() => setAddOpen(false)} />
+          <aside className="cx-drawer" role="dialog" aria-label="Add a school">
+            <div className="cx-drawer-head">
+              <div className="cx-avatar" style={{ background: '#c99a2e' }}><Icon name="plus" size={20} /></div>
+              <div><h2>Add a school</h2><p>Creates the school and its admin account in one go.</p></div>
+              <button className="cx-btn ghost" onClick={() => setAddOpen(false)} aria-label="Close"><Icon name="close" size={20} /></button>
+            </div>
+            {created ? (
+              <section className="cx-section">
+                <div className="cx-balance"><div><span>School created</span><strong style={{ fontSize: '1.5rem' }}>{created.name}</strong></div><em>{created.credits} free<br />credits</em></div>
+                <h3>Give these details to the school admin</h3>
+                <pre className="cx-details">{detailsText(created)}</pre>
+                <div className="cx-reply-actions">
+                  <button className="cx-btn gold" type="button" onClick={() => void copyText(detailsText(created), 'Details copied. Paste them into WhatsApp or a message.')}><Icon name="copy" size={16} />Copy details</button>
+                  <button className="cx-btn" type="button" onClick={openAdd}>Add another school</button>
+                </div>
+                <small style={{ color: '#667a6d' }}>The password is shown only now. After you close this panel, you can only set a new one for the admin.</small>
+              </section>
+            ) : (
+              <form className="cx-section cx-form" onSubmit={submitNewSchool}>
+                <label className="cx-field">School name<input className="cx-input" value={form.schoolName} onChange={(event) => setForm({ ...form, schoolName: event.target.value })} placeholder="e.g. His Grace Ikirun Osun Ltd" required /></label>
+                <label className="cx-field">Link name (optional)<input className="cx-input" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value.toLowerCase() })} placeholder={suggested || 'made from the school name'} maxLength={30} /><small>Link: <strong>{origin}/{form.slug || suggested || '...'}</strong></small></label>
+                <div className="cx-two">
+                  <label className="cx-field">Admin's full name<input className="cx-input" value={form.adminName} onChange={(event) => setForm({ ...form, adminName: event.target.value })} placeholder="e.g. Mr Adebayo" required /></label>
+                  <label className="cx-field">Admin username<input className="cx-input" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} placeholder="e.g. adebayo" autoComplete="off" required /></label>
+                </div>
+                <label className="cx-field">Admin password<div className="cx-inline"><input className="cx-input" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="At least 6 characters" minLength={6} autoComplete="off" required /><button className="cx-btn small" type="button" onClick={makePassword}>Generate</button></div></label>
+                <div className="cx-two">
+                  <label className="cx-field">School email (optional)<input className="cx-input" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="for payment receipts" /></label>
+                  <label className="cx-field">Free starter credits<input className="cx-input" type="number" min={0} max={1000} value={form.starter} onChange={(event) => setForm({ ...form, starter: event.target.value })} /></label>
+                </div>
+                <button className="cx-btn gold" type="submit" disabled={busy}>{busy ? 'Creating...' : 'Create school'}</button>
+              </form>
+            )}
           </aside>
         </div>
       )}
