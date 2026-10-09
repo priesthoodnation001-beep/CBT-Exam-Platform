@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import ImportQuestions from './ImportQuestions'
+import type { ImportedQuestion } from './importQuestions'
+import './import.css'
 import QuestionPrintButton from './QuestionPrintButton'
 import { API_BASE } from './apiBase'
 
@@ -29,6 +32,7 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
   const remaining = aiLeft ?? aiRemaining ?? 0
   const [savedDrafts, setSavedDrafts] = useState<SavedDraft[]>([])
   const [savingDraft, setSavingDraft] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
 
   const loadDrafts = async () => {
@@ -81,6 +85,21 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
   const deleteDraft = async (saved: SavedDraft) => {
     if (!window.confirm(`Delete the saved draft for ${saved.subject}? This cannot be undone.`)) return
     try { await fetch(`${API_BASE}/api/drafts/${saved.id}`, { method: 'DELETE', headers: authHeaders }); await loadDrafts(); showNotice('Draft deleted.') } catch { showNotice('Could not delete the draft.') }
+  }
+
+  // Questions brought in from a file or pasted text join the draft, ready for the teacher to check before submitting.
+  const addImported = (items: ImportedQuestion[]) => {
+    let base = draft
+    if (form.text.trim()) {
+      const current = makeQuestion(); if (!current) { setImportOpen(false); return }
+      base = draft.length > step ? draft.map((item, index) => index === step ? current : item) : [...draft, current]
+    }
+    const added: DraftQuestion[] = items.map((item) => ({ subject: subjectName, text: item.text, options: item.options, answer: item.answer, examId: examFor(subjectName) }))
+    const merged = [...base, ...added]
+    const first = merged[base.length]
+    setDraft(merged); setStep(base.length); setForm({ text: first.text, options: first.options, answer: first.answer })
+    setImportOpen(false)
+    showNotice(`${added.length} question${added.length === 1 ? '' : 's'} imported. Use Next to check them, then Submit.`)
   }
 
   const generateWithAi = async () => {
@@ -149,6 +168,10 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
           </label>
           <datalist id="known-subjects">{knownSubjects.map((item) => <option key={item} value={item} />)}</datalist>
           <label>Time for this subject (maximum 30 minutes)<input type="number" min="1" max="30" value={duration} onChange={(event) => setDuration(Math.min(30, Math.max(1, Number(event.target.value))))} /></label>
+          <div className="import-box">
+            <div><strong>Already have your questions?</strong><p>Bring them in from Excel, Word or by pasting. No retyping.</p></div>
+            <button className="primary-button" type="button" onClick={() => { if (!subjectName) { showNotice('Type the subject name first, then import your questions.'); return } setImportOpen(true) }}>Import questions</button>
+          </div>
           {aiReady && (
             <div className="ai-box">
               <strong>✦ Write questions with AI</strong>
@@ -184,6 +207,7 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
           <div className="wizard-count">{questions.filter((question) => question.subject.toLowerCase() === subjectName.toLowerCase()).length}<small>approved or pending questions in this subject</small></div>
         </div>
       </div>
+      {importOpen && <ImportQuestions subject={subjectName} onClose={() => setImportOpen(false)} onAdd={addImported} />}
     </>
   )
 }
