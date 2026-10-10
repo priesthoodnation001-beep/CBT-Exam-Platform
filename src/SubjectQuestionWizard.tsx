@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import ImportQuestions from './ImportQuestions'
-import type { ImportedQuestion } from './importQuestions'
+import type { ImportedQuestion } from './questionImport'
 import './import.css'
 import QuestionPrintButton from './QuestionPrintButton'
 import { API_BASE } from './apiBase'

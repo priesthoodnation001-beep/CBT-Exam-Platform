@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { DragEvent } from 'react'
-import { LETTER_OF, readPastedText, readQuestionFile } from './importQuestions'
-import type { ImportResult, ImportedQuestion } from './importQuestions'
+import { LETTER_OF, readPastedText, readQuestionFile } from './questionImport'
+import type { ImportResult, ImportedQuestion } from './questionImport'
 import './import.css'
 
 // A pop-up that lets a teacher bring in questions they already have. Three steps, plain words.
@@ -44,6 +44,10 @@ export default function ImportQuestions({ subject, onClose, onAdd }: Props) {
   const [dragging, setDragging] = useState(false)
   const [showAll, setShowAll] = useState(false)
   const input = useRef<HTMLInputElement | null>(null)
+  const resultBox = useRef<HTMLElement | null>(null)
+
+  // when the result appears, bring it into view so the teacher sees it without scrolling
+  useEffect(() => { if (result) resultBox.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }, [result])
 
   // check pasted text a moment after the teacher stops typing
   useEffect(() => {
@@ -137,7 +141,7 @@ export default function ImportQuestions({ subject, onClose, onAdd }: Props) {
           )}
 
           {result && (
-            <section className="iq-result" aria-live="polite">
+            <section className="iq-result" aria-live="polite" ref={resultBox}>
               {ready > 0 && <div className="iq-ok"><Icon name="check" size={20} /><strong>{ready} question{ready === 1 ? '' : 's'} ready to add</strong></div>}
               {problems.length > 0 && (
                 <div className="iq-warn">

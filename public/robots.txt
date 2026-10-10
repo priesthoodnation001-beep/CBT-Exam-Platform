@@ -1,0 +1,6 @@
+User-agent: *
+Disallow: /creator
+Disallow: /api/
+Allow: /
+
+Sitemap: https://exam.timpriestedu.name.ng/sitemap.xml

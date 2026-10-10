@@ -14,7 +14,9 @@ const CLIENT_DIR = path.join(__dirname, '..', 'dist')
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000
 const RESERVED_SLUGS = new Set(['api', 'assets', 'admin', 'login', 'register', 'static', 'favicon.ico', 'creator', 'teacher', 'student'])
 const OFFLINE = ['1', 'true', 'yes'].includes(String(process.env.OFFLINE_MODE || '').toLowerCase()) // school-LAN mode: runs on the school's own computer; credits are bought online and entered as signed vouchers
-const ONLINE_URL = (process.env.ONLINE_URL || 'https://timpriestedu.up.railway.app').replace(/\/$/, '')
+// The website's address. The new domain is tried first; the original Railway address is the backup, so nothing breaks while the domain is being set up.
+const ONLINE_URLS = [...new Set([process.env.ONLINE_URL || 'https://exam.timpriestedu.name.ng', 'https://timpriestedu.up.railway.app'].map((url) => url.replace(/\/$/, '')))]
+let onlineBase = ONLINE_URLS[0]
 const VOUCHER_PRIVATE = String(process.env.VOUCHER_PRIVATE_KEY || '').trim() // online server only (Railway variable)
 const VOUCHER_PUBLIC = (() => {
   if (process.env.VOUCHER_PUBLIC_KEY) return String(process.env.VOUCHER_PUBLIC_KEY).trim()
@@ -273,12 +275,16 @@ function verifyVoucher(payload, signature) {
 }
 
 async function onlineFetch(pathname, options = {}) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 20000)
-  try {
-    const result = await fetch(`${ONLINE_URL}${pathname}`, { ...options, signal: controller.signal, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } })
-    return { ok: result.ok, status: result.status, body: await result.json().catch(() => ({})) }
-  } catch { throw new Error('NO_INTERNET') } finally { clearTimeout(timer) }
+  for (const base of [onlineBase, ...ONLINE_URLS.filter((url) => url !== onlineBase)]) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 15000)
+    try {
+      const result = await fetch(`${base}${pathname}`, { ...options, signal: controller.signal, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } })
+      onlineBase = base // remember the address that worked
+      return { ok: result.ok, status: result.status, body: await result.json().catch(() => ({})) }
+    } catch { /* this address could not be reached: try the next one */ } finally { clearTimeout(timer) }
+  }
+  throw new Error('NO_INTERNET')
 }
 
 function getSetting(schoolId, name) {
