@@ -512,7 +512,7 @@ app.get('/api/data', authenticate, (request, response) => {
     : 'SELECT id, exam_id, subject, text, options, answer FROM questions WHERE school_id = ? ORDER BY created_at'
   const questions = rows(questionSql, [schoolId]).map((question) => publicQuestion(question, !isStudent))
   const results = request.user.role === 'Admin'
-    ? rows('SELECT submissions.id, submissions.score, submissions.total, submissions.submitted_at, exams.title AS exam_title, users.name AS student_name, users.student_id FROM submissions JOIN exams ON exams.id = submissions.exam_id JOIN users ON users.id = submissions.student_id WHERE submissions.school_id = ? ORDER BY submissions.submitted_at DESC', [schoolId])
+    ? rows('SELECT submissions.id, submissions.score, submissions.total, submissions.time_spent, submissions.submitted_at, exams.title AS exam_title, exams.subject AS subject, exams.date AS exam_date, exams.time AS exam_time, users.name AS student_name, users.student_id, users.class_section FROM submissions JOIN exams ON exams.id = submissions.exam_id JOIN users ON users.id = submissions.student_id WHERE submissions.school_id = ? ORDER BY submissions.submitted_at DESC', [schoolId])
     : []
   const balance = creditBalance(schoolId)
   response.json({ users, exams, questions, results, subjects, offline: OFFLINE, examsOpen: balance > 0, ...(request.user.role === 'Admin' ? { credits: balance } : {}), ...(request.user.role === 'Teacher' ? { aiReady: !OFFLINE && Boolean(ANTHROPIC_KEY), aiRemaining: aiRemaining(request.user) } : {}) })
@@ -635,7 +635,7 @@ app.post('/api/questions', authenticate, requireRole('Teacher'), (request, respo
 })
 
 app.post('/api/submissions', authenticate, requireRole('Student'), (request, response) => {
-  const { examId, answers = {} } = request.body || {}
+  const { examId, answers = {}, timeSpent } = request.body || {}
   const schoolId = request.user.schoolId
   const exam = rows('SELECT exams.* FROM exams JOIN subject_settings ON subject_settings.subject = exams.subject AND subject_settings.school_id = exams.school_id AND subject_settings.approved = 1 WHERE exams.id = ? AND exams.school_id = ? AND exams.status = \'Scheduled\'', [examId, schoolId]).at(0)
   if (!exam) return response.status(404).json({ error: 'Exam is not available.' })
@@ -644,7 +644,8 @@ app.post('/api/submissions', authenticate, requireRole('Student'), (request, res
   const examQuestions = rows('SELECT questions.id, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? AND (questions.exam_id = ? OR (questions.exam_id IS NULL AND questions.subject = ?))', [schoolId, examId, exam.subject])
   const total = examQuestions.length
   const score = examQuestions.reduce((sum, question) => sum + (Number(answers[question.id]) === Number(question.answer) ? 1 : 0), 0)
-  run('INSERT INTO submissions (id, school_id, exam_id, student_id, score, total, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), schoolId, examId, request.user.id, score, total, new Date().toISOString()])
+  const spent = Number.isFinite(Number(timeSpent)) && timeSpent !== null && timeSpent !== '' ? Math.max(0, Math.min(Math.round(Number(timeSpent)), (Number(exam.duration) || 90) * 60 + 300)) : null // seconds the student spent, never more than the exam length plus a little
+  run('INSERT INTO submissions (id, school_id, exam_id, student_id, score, total, time_spent, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), schoolId, examId, request.user.id, score, total, spent, new Date().toISOString()])
   scheduleQuickSync(schoolId)
   addCredits(schoolId, -1, 'Exam attempt', examId + ':' + request.user.id) // never blocks a finished exam; balance stops at 0
   response.status(201).json({ score, total })

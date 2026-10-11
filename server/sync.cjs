@@ -26,6 +26,7 @@ module.exports = function createSync({ rows, exec, persist }) {
       exec(`UPDATE ${table} SET updated_at = ? WHERE updated_at IS NULL`, [new Date().toISOString()])
     }
     try { exec('ALTER TABLE exams ADD COLUMN class_section TEXT') } catch { /* column already exists */ }
+    try { exec('ALTER TABLE submissions ADD COLUMN time_spent INTEGER') } catch { /* column already exists */ }
     exec('CREATE TABLE IF NOT EXISTS tombstones (school_id TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, deleted_at TEXT NOT NULL, PRIMARY KEY (school_id, kind, key))')
     const where = { users: 'id = NEW.id', exams: 'id = NEW.id', questions: 'id = NEW.id', subject_settings: 'school_id = NEW.school_id AND subject = NEW.subject' }
     for (const [table, match] of Object.entries(where)) {
@@ -52,7 +53,7 @@ module.exports = function createSync({ rows, exec, persist }) {
       ledger: rows('SELECT id, change, reason, reference, created_at AS createdAt FROM credit_ledger WHERE school_id = ? AND created_at >= ?', [schoolId, after]),
       lastSeen: rows('SELECT user_id AS userId, seen_at AS seenAt FROM last_seen WHERE school_id = ? AND seen_at >= ?', [schoolId, after]),
       drafts: rows('SELECT id, user_id AS userId, subject, duration, data, updated_at AS updatedAt FROM question_drafts WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
-      submissions: rows('SELECT id, exam_id AS examId, student_id AS studentId, score, total, submitted_at AS submittedAt FROM submissions WHERE school_id = ? AND submitted_at >= ?', [schoolId, after]),
+      submissions: rows('SELECT id, exam_id AS examId, student_id AS studentId, score, total, time_spent AS timeSpent, submitted_at AS submittedAt FROM submissions WHERE school_id = ? AND submitted_at >= ?', [schoolId, after]),
       tombstones: rows('SELECT kind, key, deleted_at AS deletedAt FROM tombstones WHERE school_id = ? AND deleted_at >= ?', [schoolId, after])
     }
   }
@@ -239,7 +240,7 @@ module.exports = function createSync({ rows, exec, persist }) {
         const hasStudent = rows('SELECT id FROM users WHERE id = ? AND school_id = ?', [result.studentId, schoolId]).length
         const already = rows('SELECT id FROM submissions WHERE exam_id = ? AND student_id = ?', [result.examId, result.studentId]).length
         if (!hasExam || !hasStudent || already) { if (already) stats.conflicts += 1; else stats.skipped += 1; continue }
-        exec('INSERT INTO submissions (id, school_id, exam_id, student_id, score, total, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [result.id, schoolId, result.examId, result.studentId, number(result.score), number(result.total), submittedAt])
+        exec('INSERT INTO submissions (id, school_id, exam_id, student_id, score, total, time_spent, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [result.id, schoolId, result.examId, result.studentId, number(result.score), number(result.total), result.timeSpent === null || result.timeSpent === undefined || !Number.isFinite(Number(result.timeSpent)) ? null : Math.max(0, Math.round(Number(result.timeSpent))), submittedAt])
         stats.applied += 1
       }
       exec('COMMIT')

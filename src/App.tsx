@@ -12,6 +12,7 @@ import TimedExamRunner from './TimedExamRunner'
 import CreatorPage from './CreatorPage'
 import DashboardShell from './DashboardShell'
 import SupportWidget from './SupportWidget'
+import { SlipSheet } from './ResultSlips'
 import { RoleChooser, RoleSignIn } from './RoleSignIn'
 import { API_BASE } from './apiBase'
 import './App.css'
@@ -23,7 +24,7 @@ type Tab = 'Overview' | 'Accounts' | 'Schedule' | 'Approvals' | 'Questions' | 'M
 type Account = { id: string; role: Role; name: string; username?: string; studentId?: string; classSection?: string; schoolName?: string; schoolSlug?: string }
 type Exam = { id: string; title: string; classSection?: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number; taken?: number }
 type Question = { id: string; examId?: string; subject: string; text: string; options: string[]; answer?: number }
-type Result = { id: string; exam_title: string; student_name: string; student_id: string; score: number; total: number; submitted_at: string }
+type Result = { id: string; exam_title: string; student_name: string; student_id: string; score: number; total: number; submitted_at: string; time_spent?: number | null; subject?: string | null; exam_date?: string | null; exam_time?: string | null; class_section?: string | null }
 type SubjectSetting = { subject: string; duration: number; approved: number; approved_at?: string }
 type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: Result[]; subjects: SubjectSetting[]; credits?: number; examsOpen?: boolean; aiReady?: boolean; aiRemaining?: number; offline?: boolean }
 type School = { name: string; slug: string }
@@ -107,6 +108,7 @@ function AppInner() {
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number>>({})
   const [submitted, setSubmitted] = useState(false)
   const loggingOut = useRef(false)
+  const examStartedAt = useRef(0) // when the student began the exam, to work out the time spent
   const [loading, setLoading] = useState(false)
   const [biometricAvailable, setBiometricAvailable] = useState(false)
   const [biometricSaved, setBiometricSaved] = useState(false)
@@ -188,6 +190,7 @@ function AppInner() {
   const showNotice = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3000) }
   const beginExam = (exam: Exam) => {
     if (data.examsOpen === false) { showNotice('Exams are unavailable because this school has run out of credits. Please tell your school admin.'); return }
+    examStartedAt.current = Date.now()
     setActiveExam(exam)
   }
 
@@ -256,7 +259,7 @@ function AppInner() {
   async function submitExam(answers: Record<string, number>, autoLogout = true): Promise<boolean> {
     if (!activeExam) return false
     try {
-      await api('/submissions', token, { method: 'POST', body: JSON.stringify({ examId: activeExam.id, answers }) })
+      await api('/submissions', token, { method: 'POST', body: JSON.stringify({ examId: activeExam.id, answers, timeSpent: examStartedAt.current ? Math.round((Date.now() - examStartedAt.current) / 1000) : undefined }) })
       setSubmitted(true); showNotice('Exam submitted successfully.')
       if (autoLogout && session?.role === 'Student') window.setTimeout(() => logout(), 4000)
       return true
@@ -340,7 +343,7 @@ function AppInner() {
             {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} aiReady={data.aiReady} aiRemaining={data.aiRemaining} />}
             {tab === 'My exams' && <ExamList exams={data.exams} student={isStudent} centre={centre} start={(exam) => { beginExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}
             {tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} approve={approveSubject} deleteSubject={deleteSubject} />}
-            {tab === 'Results' && isAdmin && <Results results={data.results} />}
+            {tab === 'Results' && isAdmin && <Results results={data.results} schoolName={centre} />}
             {tab === 'Billing' && isAdmin && (data.offline ? <OfflineBilling token={token} showNotice={showNotice} refresh={refresh} /> : <Billing token={token} showNotice={showNotice} refresh={refresh} />)}
             {tab === 'Profile' && !isStudent && <Profile session={session} token={token} showNotice={showNotice} />}
           </>}
@@ -596,16 +599,43 @@ function ExamList({ exams, student, centre, start }: { exams: Exam[]; student: b
   )
 }
 
-function Results({ results }: { results: Result[] }) {
+function Results({ results, schoolName }: { results: Result[]; schoolName: string }) {
+  const [query, setQuery] = useState('')
+  const [exam, setExam] = useState('All')
+  const [printing, setPrinting] = useState<Result[] | null>(null)
+  const exams = Array.from(new Set(results.map((result) => result.exam_title))).sort()
+  const words = query.trim().toLowerCase()
+  const shown = results.filter((result) => (exam === 'All' || result.exam_title === exam) && (!words || `${result.student_name} ${result.student_id}`.toLowerCase().includes(words)))
+  const slipCount = new Set(shown.map((result) => `${result.student_id || result.student_name}|${result.exam_date || result.id}`)).size
+
+  // print the result slips: only the slips are shown on the page while the print window is open
+  useEffect(() => {
+    if (!printing) return
+    document.body.classList.add('printing-slips')
+    const finish = () => { document.body.classList.remove('printing-slips'); setPrinting(null) }
+    window.addEventListener('afterprint', finish, { once: true })
+    const start = window.setTimeout(() => window.print(), 250)
+    const safety = window.setTimeout(finish, 180000)
+    return () => { window.clearTimeout(start); window.clearTimeout(safety); window.removeEventListener('afterprint', finish); document.body.classList.remove('printing-slips') }
+  }, [printing])
+
   return (
     <>
-      <div className="section-heading"><div><p className="eyebrow">Administrator reports</p><h2>Exam results</h2></div><button className="primary-button" onClick={() => window.print()}>Print / Save PDF</button></div>
+      <div className="section-heading"><div><p className="eyebrow">Administrator reports</p><h2>Exam results</h2></div><div className="results-actions"><button className="secondary-button" onClick={() => window.print()}>Print table</button><button className="primary-button" disabled={!shown.length} onClick={() => setPrinting(shown)}>Print result slips ({slipCount})</button></div></div>
+      {results.length > 0 && (
+        <div className="results-filter">
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search a student's name or ID" />
+          <select value={exam} onChange={(event) => setExam(event.target.value)}><option value="All">All exams</option>{exams.map((title) => <option key={title} value={title}>{title}</option>)}</select>
+          <small>Slips are printed for the results shown below. Search a name to print one student's slip.</small>
+        </div>
+      )}
       <div className="table-panel results-table">
         <div className="table-head"><span>Student</span><span>Exam</span><span>Score</span><span>Submitted</span></div>
-        {results.length
-          ? results.map((result) => <div className="table-row" key={result.id}><strong>{result.student_name}<small>{result.student_id}</small></strong><span>{result.exam_title}</span><span className="score-text">{result.score} / {result.total}</span><span>{new Date(result.submitted_at).toLocaleString()}</span></div>)
-          : <div className="result-empty"><span>▥</span><h3>No submitted results yet</h3><p>Student submissions will appear here for review and printing.</p></div>}
+        {shown.length
+          ? shown.map((result) => <div className="table-row" key={result.id}><strong>{result.student_name}<small>{result.student_id}</small></strong><span>{result.exam_title}</span><span className="score-text">{result.score} / {result.total}</span><span>{new Date(result.submitted_at).toLocaleString()}</span></div>)
+          : <div className="result-empty"><span>▥</span><h3>{results.length ? 'No results match your search' : 'No submitted results yet'}</h3><p>{results.length ? 'Try a different name or choose All exams.' : 'Student submissions will appear here for review and printing.'}</p></div>}
       </div>
+      {printing && <SlipSheet results={printing} schoolName={schoolName} />}
     </>
   )
 }
