@@ -27,6 +27,33 @@ button { cursor: pointer; }
 @media print { .sidebar, .topbar, .section-heading .primary-button, .toast { display: none !important; }.app-shell, .main-content, .content-wrap { display: block; background: #fff; padding: 0; max-width: none; }.results-table { border: 1px solid #ddd; }.results-table .table-head, .results-table .table-row { min-width: 0; grid-template-columns: 1.25fr 1.25fr .7fr 1.1fr; }.results-table .table-row { color: #222; } }
 .countdown { min-width: 112px; padding: 10px 14px; border: 1px solid #e0e8df; border-radius: 7px; background: #fff; text-align: center; color: #315847; }.countdown small { display: block; color: #94a198; font-size: 8px; letter-spacing: 1px; }.countdown strong { display: block; font: 600 24px Georgia, serif; margin-top: 4px; }.countdown.urgent { border-color: #e6a08f; background: #fff1ed; color: #b34f40; }.approval-list { display: grid; gap: 12px; }.approval-card { display: flex; align-items: center; gap: 18px; justify-content: space-between; background: #fff; border: 1px solid #e2e9e1; border-radius: 8px; padding: 19px 21px; }.approval-card > div { flex: 1; }.approval-card h3 { color: #2e4b3e; font: 600 17px Georgia, serif; margin: 10px 0 6px; }.approval-card p { color: #8b9990; font-size: 11px; margin: 0; }.approval-card .tag { flex: 0 0 auto; }.approval-card .small-button { white-space: nowrap; }
 @media (max-width: 560px) { .approval-card { align-items: flex-start; flex-direction: column; gap: 12px; }.approval-card .small-button { margin-top: 0; }.countdown { min-width: 90px; }.option-grid { grid-template-columns: 1fr; }.wizard-actions { flex-wrap: wrap; } }
+
+.question-authoring-tools { display: grid; gap: 12px; padding: 14px; border: 1px solid #e2e9e1; border-radius: 8px; background: #fbfcfa; }
+.math-tools { display: grid; gap: 9px; color: #607369; font-size: 11px; }
+.math-symbols, .formula-templates, .table-builder-heading > div:last-child, .table-builder-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.math-symbols button, .formula-templates button { border: 1px solid #dce6dd; border-radius: 5px; background: #fff; color: #29473b; padding: 6px 9px; font-size: 13px; }
+.formula-templates { padding-top: 3px; }.formula-templates span { color: #829187; font-size: 10px; }
+.formula-templates button { font-size: 11px; }.table-toggle { justify-self: start; }
+.question-table-builder { display: grid; gap: 12px; padding: 14px; border: 1px solid #dce6dd; border-radius: 8px; background: #fff; }
+.table-builder-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; color: #29473b; font-size: 12px; }
+.table-builder-heading small { display: block; margin-top: 4px; color: #829187; font-size: 10px; font-weight: 400; }
+.table-builder-heading .secondary-button, .table-builder-actions .secondary-button { padding: 8px 10px; }
+.table-editor-scroll { max-width: 100%; overflow: auto; }
+.question-table-editor { width: 100%; min-width: 440px; border-collapse: collapse; }
+.question-table-editor td { padding: 3px; border: 1px solid #e2e9e1; }
+.question-table-editor input { width: 100%; min-width: 90px; border: 1px solid #dce6dd; border-radius: 4px; padding: 8px; color: #29473b; background: #fbfcfa; }
+.table-builder-actions { justify-content: flex-end; }
+.question-authoring-preview { padding: 16px; border: 1px solid #e2e9e1; border-radius: 8px; background: #fff; color: #29473b; }
+.question-authoring-preview .eyebrow { margin-left: 0; color: #a4b0a7; }
+.question-authoring-preview > ol { padding-left: 24px; }
+.question-authoring-preview > ol > li { padding: 5px 0 5px 4px; }
+.question-content { min-width: 0; overflow-wrap: anywhere; }
+.question-content-text { margin: 0 0 8px; white-space: pre-wrap; }
+.question-content-text:last-child { margin-bottom: 0; }
+.question-content-table-wrap { max-width: 100%; margin: 10px 0; overflow-x: auto; }
+.question-content-table { width: 100%; border-collapse: collapse; color: inherit; font: inherit; }
+.question-content-table th, .question-content-table td { border: 1px solid #b9c7bb; padding: 7px 9px; text-align: left; }
+.question-content-table th { background: #f3f6f1; font-weight: 700; }
 .csv-import-panel { margin-bottom: 18px; padding: 20px 22px; background: #edf5ee; border: 1px solid #dceadd; border-radius: 8px; }.csv-import-heading { display: flex; align-items: start; justify-content: space-between; gap: 18px; }.csv-import-heading h3 { margin: 8px 0 5px; color: #29473b; font: 600 17px Georgia, serif; }.csv-import-heading p:last-child { margin: 0; color: #718279; font-size: 11px; }.csv-file-button { display: inline-flex; align-items: center; margin-top: 17px; padding: 10px 14px; border: 1px solid #cfe0d0; border-radius: 6px; color: #315847; background: #fff; font-size: 11px; font-weight: 700; }.csv-file-button input { display: none; }.csv-summary { display: flex; gap: 16px; margin-top: 16px; color: #5c8167; font-size: 10px; }.csv-preview { margin: 10px 0 15px; background: #fff; border: 1px solid #dfe9df; border-radius: 6px; overflow: hidden; }.csv-row { display: grid; grid-template-columns: 1fr 1fr 110px; gap: 12px; padding: 10px 13px; border-bottom: 1px solid #edf0ec; color: #456054; font-size: 11px; }.csv-row:last-child { border-bottom: 0; }.csv-row strong { color: #6e7f75; font-size: 10px; }.csv-row small { font-size: 9px; }.csv-ok { color: #4c9661; }.csv-error { color: #b45b51; }
 .account-row { grid-template-columns: 1.35fr .75fr 1fr .7fr .65fr; }.account-row .delete-button { justify-self: start; }
 @media (max-width: 560px) { .csv-import-heading { display: block; }.csv-import-heading .secondary-button { margin-top: 14px; }.csv-row { grid-template-columns: 1fr; gap: 4px; }.account-row { min-width: 650px; } }

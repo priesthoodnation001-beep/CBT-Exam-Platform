@@ -57,6 +57,9 @@
 .iq-hint { margin: 0 0 6px; color: #667a6d; font-size: 0.85rem; }
 .iq-preview { display: grid; gap: 10px; }
 .iq-preview article { border: 1px solid #e3e8df; border-radius: 14px; padding: 12px 14px; background: #fafcf9; }
+.iq-question-preview { display: flex; align-items: flex-start; gap: 5px; }
+.iq-question-preview .question-content { flex: 1; }
+.iq-question-preview .question-content-text { margin-bottom: 4px; }
 .iq-preview ul { list-style: none; margin: 8px 0 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; font-size: 0.9rem; }
 .iq-preview li.right { color: #1d6b38; font-weight: 700; }
 .iq-preview li em { font-style: normal; font-size: 0.75rem; background: #dff3e5; border-radius: 999px; padding: 1px 8px; margin-left: 4px; }

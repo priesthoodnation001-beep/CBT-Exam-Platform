@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import { LETTER_OF, readPastedText, readQuestionFile } from './questionImport'
 import type { ImportResult, ImportedQuestion } from './questionImport'
+import QuestionContent from './QuestionContent'
 import './import.css'
 
 // A pop-up that lets a teacher bring in questions they already have. Three steps, plain words.
@@ -156,7 +157,7 @@ export default function ImportQuestions({ subject, onClose, onAdd }: Props) {
                   <p className="iq-hint">A look at the first {Math.min(3, ready)}:</p>
                   {result.questions.slice(0, 3).map((question, index) => (
                     <article key={index}>
-                      <strong>{index + 1}. {question.text}</strong>
+                      <div className="iq-question-preview"><b>{index + 1}.</b> <QuestionContent content={question.text} /></div>
                       <ul>{question.options.map((option, position) => <li key={position} className={position === question.answer ? 'right' : ''}><b>{LETTER_OF(position)}.</b> {option}{position === question.answer && <em> correct</em>}</li>)}</ul>
                     </article>
                   ))}

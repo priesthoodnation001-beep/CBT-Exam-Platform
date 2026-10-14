@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_BASE } from './apiBase'
+import { schoolRolePath } from './schoolLinks'
 import './creator.css'
 
 // The owner's console, at  /creator  on the website. It needs CREATOR_USERNAME and CREATOR_PASSWORD in the Railway variables.
@@ -228,7 +229,7 @@ export default function CreatorPage() {
   const shownTickets = tickets.filter((ticket) => supportFilter === 'All' || (supportFilter === 'Needs reply' ? ticket.status === 'open' : supportFilter === 'Answered' ? ticket.status === 'answered' : ticket.status === 'resolved'))
 
   const origin = window.location.origin
-  const linkOf = (slug: string) => `${origin}/${slug}`
+  const linkOf = (slug: string, role: 'admin' | 'teacher' | 'student' = 'admin') => `${origin}${schoolRolePath(slug, role)}`
 
   const copyText = async (text: string, done: string) => {
     try { await navigator.clipboard.writeText(text); setMessage(done) } catch { setMessage('Could not copy automatically. Select the text and copy it by hand.') }
@@ -261,7 +262,7 @@ export default function CreatorPage() {
   }
 
   const detailsText = (info: { name: string; slug: string; username: string; password: string }) =>
-    `${info.name} on TIMPRIEST EDU\n\nAdmin sign-in: ${linkOf(info.slug)}/admin\nUsername: ${info.username}\nPassword: ${info.password}\n\nStudents sign in at: ${linkOf(info.slug)}/student\nTeachers sign in at: ${linkOf(info.slug)}/teacher\n\nPlease change your password after you sign in.`
+    `${info.name} on TIMPRIEST EDU\n\nAdmin sign-in: ${linkOf(info.slug, 'admin')}\nUsername: ${info.username}\nPassword: ${info.password}\n\nStudents sign in at: ${linkOf(info.slug, 'student')}\nTeachers sign in at: ${linkOf(info.slug, 'teacher')}\n\nPlease change your password after you sign in.`
 
   const saveLink = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -390,7 +391,7 @@ export default function CreatorPage() {
                       <div><strong>{school.exams}</strong><span>Exams</span></div>
                       <div><strong>{school.results}</strong><span>Results</span></div>
                     </div>
-                    <div className="cx-school-foot"><small>Joined {new Date(school.created_at).toLocaleDateString([], { dateStyle: 'medium' })}</small><div className="cx-foot-actions"><button className="cx-btn ghost small" onClick={() => void copyText(linkOf(school.slug), 'School link copied.')} title={linkOf(school.slug)}><Icon name="copy" size={15} />Copy link</button><button className="cx-btn primary small" onClick={() => void guard(() => openSchool(school.id))}>Manage</button></div></div>
+                    <div className="cx-school-foot"><small>Joined {new Date(school.created_at).toLocaleDateString([], { dateStyle: 'medium' })}</small><div className="cx-foot-actions"><button className="cx-btn ghost small" onClick={() => void copyText(linkOf(school.slug), 'Admin link copied.')} title={linkOf(school.slug)}><Icon name="copy" size={15} />Copy admin link</button><button className="cx-btn primary small" onClick={() => void guard(() => openSchool(school.id))}>Manage</button></div></div>
                   </article>
                 ))}
               </div>
@@ -478,8 +479,10 @@ export default function CreatorPage() {
 
             <section className="cx-section">
               <h3>School link</h3>
-              <p>This is the address you give the school. Keep it short and easy to say.</p>
-              <div className="cx-linkbox"><code>{linkOf(detail.school.slug)}</code><button className="cx-btn small" type="button" onClick={() => void copyText(linkOf(detail.school.slug), 'School link copied.')}><Icon name="copy" size={15} />Copy</button></div>
+              <p>Share the matching sign-in link with each school role.</p>
+              {(['admin', 'teacher', 'student'] as const).map((role) => (
+                <div className="cx-linkbox" key={role}><code>{linkOf(detail.school.slug, role)}</code><button className="cx-btn small" type="button" onClick={() => void copyText(linkOf(detail.school.slug, role), `${role[0].toUpperCase()}${role.slice(1)} link copied.`)}><Icon name="copy" size={15} />Copy {role}</button></div>
+              ))}
               <form className="cx-inline" onSubmit={saveLink}>
                 <input className="cx-input" value={linkDraft} onChange={(event) => setLinkDraft(event.target.value.toLowerCase())} placeholder="new link name, e.g. hisgrace" minLength={3} maxLength={30} required />
                 <button className="cx-btn primary small" type="submit" disabled={busy || linkDraft === detail.school.slug}>Change link</button>
@@ -548,7 +551,7 @@ export default function CreatorPage() {
             ) : (
               <form className="cx-section cx-form" onSubmit={submitNewSchool}>
                 <label className="cx-field">School name<input className="cx-input" value={form.schoolName} onChange={(event) => setForm({ ...form, schoolName: event.target.value })} placeholder="e.g. His Grace Ikirun Osun Ltd" required /></label>
-                <label className="cx-field">Link name (optional)<input className="cx-input" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value.toLowerCase() })} placeholder={suggested || 'made from the school name'} maxLength={30} /><small>Link: <strong>{origin}/{form.slug || suggested || '...'}</strong></small></label>
+                <label className="cx-field">Link name (optional)<input className="cx-input" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value.toLowerCase() })} placeholder={suggested || 'made from the school name'} maxLength={30} /><small>Admin sign-in: <strong>{origin}{schoolRolePath(form.slug || suggested || '...', 'admin')}</strong></small></label>
                 <div className="cx-two">
                   <label className="cx-field">Admin's full name<input className="cx-input" value={form.adminName} onChange={(event) => setForm({ ...form, adminName: event.target.value })} placeholder="e.g. Mr Adebayo" required /></label>
                   <label className="cx-field">Admin username<input className="cx-input" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} placeholder="e.g. adebayo" autoComplete="off" required /></label>

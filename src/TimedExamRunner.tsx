@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
+import QuestionContent from './QuestionContent'
 import './exam-runner.css'
 
 // The screen a student writes the exam on. It shows when the exam started, when it ends, and the time left.
@@ -125,11 +126,11 @@ export default function TimedExamRunner({ exam, questions, selectedAnswers, setS
         <div className="ex-layout">
           <section className="ex-card">
             <p className="ex-count">Question {current + 1} of {questions.length}</p>
-            <h2 className="ex-question">{question.text}</h2>
+            <div className="ex-question" role="heading" aria-level={2}><QuestionContent content={question.text} /></div>
             <div className="ex-options" role="radiogroup" aria-label="Choose one answer">
               {question.options.map((option, index) => (
                 <button key={index} type="button" role="radio" aria-checked={selectedAnswers[question.id] === index} disabled={timeUp} className={`ex-option ${selectedAnswers[question.id] === index ? 'chosen' : ''}`} onClick={() => setSelectedAnswers((chosen) => ({ ...chosen, [question.id]: index }))}>
-                  <span className="ex-letter">{LETTERS[index]}</span><span>{option}</span>
+                  <span className="ex-letter">{LETTERS[index]}</span><span className="ex-option-content">{option}</span>
                 </button>
               ))}
             </div>

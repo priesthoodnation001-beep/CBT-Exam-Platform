@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ImportQuestions from './ImportQuestions'
 import type { ImportedQuestion } from './questionImport'
 import './import.css'
 import QuestionPrintButton from './QuestionPrintButton'
+import QuestionContent from './QuestionContent'
 import { API_BASE } from './apiBase'
 
 type Exam = { id: string; subject: string }
@@ -12,6 +13,8 @@ type SavedDraft = { id: string; subject: string; duration: number; questions: { 
 type Props = { questions: Question[]; exams: Exam[]; token: string | null; refresh: () => Promise<void>; showNotice: (message: string) => void; aiReady?: boolean; aiRemaining?: number }
 
 const emptyForm = { text: '', options: ['', '', '', ''], answer: 0 }
+const MATH_SYMBOLS = ['±', '×', '÷', '√', 'π', '∑', '∫', '≤', '≥', '≠', '∞', '°', '₀₁₂₃₄₅₆₇₈₉', '⁰¹²³⁴⁵⁶⁷⁸⁹', '→', '⇌']
+const FORMULA_TEMPLATES = ['a² + b² = c²', 'F = ma', 'v = u + at', 'H₂O', 'E = mc²']
 
 async function saveQuestion(token: string | null, question: DraftQuestion) {
   const response = await fetch(`${API_BASE}/api/questions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(question) })
@@ -33,6 +36,10 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
   const [savedDrafts, setSavedDrafts] = useState<SavedDraft[]>([])
   const [savingDraft, setSavingDraft] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [tableOpen, setTableOpen] = useState(false)
+  const [tableCells, setTableCells] = useState([['Heading 1', 'Heading 2', 'Heading 3'], ['', '', ''], ['', '', '']])
+  const activeEditor = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
+  const questionEditor = useRef<HTMLTextAreaElement | null>(null)
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
 
   const loadDrafts = async () => {
@@ -46,6 +53,41 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
   const knownSubjects = Array.from(new Set([...exams.map((exam) => exam.subject), ...questions.map((question) => question.subject)]))
   const examFor = (name: string) => exams.find((exam) => exam.subject.toLowerCase() === name.toLowerCase())?.id
   const updateOption = (index: number, value: string) => setForm({ ...form, options: form.options.map((option, optionIndex) => optionIndex === index ? value : option) })
+  const insertAt = (field: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+    const start = field.selectionStart ?? field.value.length
+    const end = field.selectionEnd ?? start
+    const nextValue = `${field.value.slice(0, start)}${value}${field.value.slice(end)}`
+    const optionIndex = field.dataset.questionOption
+    if (optionIndex === undefined) {
+      setForm((current) => ({ ...current, text: nextValue }))
+    } else {
+      const index = Number(optionIndex)
+      setForm((current) => ({ ...current, options: current.options.map((option, optionIndex) => optionIndex === index ? nextValue : option) }))
+    }
+    window.requestAnimationFrame(() => {
+      field.focus()
+      field.setSelectionRange(start + value.length, start + value.length)
+    })
+  }
+  const insertFormula = (value: string) => {
+    const field = activeEditor.current || questionEditor.current
+    if (field) insertAt(field, value)
+  }
+  const insertTable = () => {
+    const field = questionEditor.current
+    if (!field) return
+    const [header, ...rows] = tableCells
+    const formatCell = (cell: string) => cell.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+    const markdown = `| ${header.map(formatCell).join(' | ')} |\n| ${header.map(() => '---').join(' | ')} |\n${rows.map((row) => `| ${row.map(formatCell).join(' | ')} |`).join('\n')}`
+    const start = field.selectionStart ?? field.value.length
+    const prefix = field.value.slice(0, start)
+    const separator = prefix && !prefix.endsWith('\n') ? '\n' : ''
+    insertAt(field, `${separator}${markdown}\n`)
+    setTableOpen(false)
+  }
+  const updateTableCell = (rowIndex: number, columnIndex: number, value: string) => {
+    setTableCells((current) => current.map((row, index) => index === rowIndex ? row.map((cell, cellIndex) => cellIndex === columnIndex ? value : cell) : row))
+  }
 
   const makeQuestion = (): DraftQuestion | null => {
     if (!subjectName || !form.text.trim() || form.options.some((option) => !option.trim())) { showNotice('Enter the subject name, the question, and all four options first.'); return null }
@@ -184,15 +226,37 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
               <button className="secondary-button" type="button" onClick={() => void generateWithAi()} disabled={aiBusy || remaining <= 0}>{aiBusy ? 'Writing questions...' : remaining <= 0 ? 'No AI requests left today' : 'Generate with AI'}</button>
             </div>
           )}
-          <label>Question text<textarea value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} placeholder="Write the question here..." /></label>
+          <div className="question-authoring-tools">
+            <div className="math-tools">
+              <strong>Math symbols</strong>
+              <div className="math-symbols">{MATH_SYMBOLS.map((symbol) => <button key={symbol} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => insertFormula(symbol)} aria-label={`Insert ${symbol}`}>{symbol}</button>)}</div>
+              <div className="formula-templates"><span>Examples</span>{FORMULA_TEMPLATES.map((formula) => <button key={formula} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => insertFormula(formula)}>{formula}</button>)}</div>
+            </div>
+            <button className="secondary-button table-toggle" type="button" onClick={() => setTableOpen((open) => !open)}>{tableOpen ? 'Close table builder' : 'Insert a table'}</button>
+          </div>
+          {tableOpen && (
+            <section className="question-table-builder" aria-label="Question table builder">
+              <div className="table-builder-heading"><div><strong>Build a question table</strong><small>Fill in cells, then insert the table into the question.</small></div><div><button className="secondary-button" type="button" onClick={() => setTableCells((current) => [...current, current[0].map(() => '')])}>+ Add row</button><button className="secondary-button" type="button" onClick={() => setTableCells((current) => current.length > 2 ? current.slice(0, -1) : current)} disabled={tableCells.length <= 2}>Remove row</button></div></div>
+              <div className="table-editor-scroll"><table className="question-table-editor"><tbody>{tableCells.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, columnIndex) => <td key={columnIndex}><input aria-label={`Table row ${rowIndex + 1}, column ${columnIndex + 1}`} value={cell} onChange={(event) => updateTableCell(rowIndex, columnIndex, event.target.value)} placeholder={rowIndex === 0 ? `Heading ${columnIndex + 1}` : 'Enter value'} /></td>)}</tr>)}</tbody></table></div>
+              <div className="table-builder-actions"><button className="secondary-button" type="button" onClick={() => setTableCells((current) => current.map((row) => [...row, '']))}>+ Add column</button><button className="secondary-button" type="button" onClick={() => setTableCells((current) => current[0].length > 2 ? current.map((row) => row.slice(0, -1)) : current)} disabled={tableCells[0].length <= 2}>Remove column</button><button className="primary-button" type="button" onClick={insertTable}>Insert table in question</button></div>
+            </section>
+          )}
+          <label>Question text<textarea ref={questionEditor} value={form.text} onFocus={(event) => { activeEditor.current = event.currentTarget }} onChange={(event) => setForm({ ...form, text: event.target.value })} placeholder="Write the question here..." /></label>
           <div className="option-grid">
-            {form.options.map((option, index) => <label key={index}>Option {String.fromCharCode(65 + index)}<input value={option} onChange={(event) => updateOption(index, event.target.value)} /></label>)}
+            {form.options.map((option, index) => <label key={index}>Option {String.fromCharCode(65 + index)}<input data-question-option={index} value={option} onFocus={(event) => { activeEditor.current = event.currentTarget }} onChange={(event) => updateOption(index, event.target.value)} /></label>)}
           </div>
           <label>Correct answer
             <select value={form.answer} onChange={(event) => setForm({ ...form, answer: Number(event.target.value) })}>
               {form.options.map((_, index) => <option value={index} key={index}>Option {String.fromCharCode(65 + index)}</option>)}
             </select>
           </label>
+          {(form.text.trim() || form.options.some(Boolean)) && (
+            <section className="question-authoring-preview">
+              <p className="eyebrow">Student preview</p>
+              <QuestionContent content={form.text} />
+              <ol type="A">{form.options.map((option, index) => <li key={index}><QuestionContent content={option || `Option ${String.fromCharCode(65 + index)}`} /></li>)}</ol>
+            </section>
+          )}
           <div className="wizard-actions">
             <button className="secondary-button" type="button" onClick={previousStep} disabled={step === 0}>← Previous</button>
             <button className="secondary-button" type="button" onClick={nextStep}>Next →</button>

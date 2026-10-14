@@ -126,7 +126,8 @@ export function RoleSignIn({ role, schoolName, needSchool, schoolError, loading,
           <h2>{copy.title}</h2>
           {schoolError ? <p className="si-error">{schoolError}</p> : needSchool ? (
             <form onSubmit={(event) => { event.preventDefault(); onSchoolLink(link) }}>
-              <p className="si-sub">Students sign in through their own school. Type the link name your school gave you.</p>
+                {error && <p className="si-error">{error}</p>}
+                <p className="si-sub">Students sign in through their own school. Type the link name your school gave you.</p>
               <label>School link name<input value={link} onChange={(event) => setLink(event.target.value)} placeholder="e.g. his-grace-ikirun-osun-ltd" required /></label>
               <button className="si-button" type="submit">Continue <Icon name="arrow" size={18} /></button>
             </form>

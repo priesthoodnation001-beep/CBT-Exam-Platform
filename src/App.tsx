@@ -14,12 +14,13 @@ import DashboardShell from './DashboardShell'
 import SupportWidget from './SupportWidget'
 import { SlipSheet } from './ResultSlips'
 import { RoleChooser, RoleSignIn } from './RoleSignIn'
+import { schoolRolePath } from './schoolLinks'
 import { API_BASE } from './apiBase'
 import './App.css'
 import './mobile.css'
 
 type Role = 'Admin' | 'Teacher' | 'Student'
-type EntryPage = 'home' | 'login' | 'register'
+type EntryPage = 'home' | 'login' | 'register' | 'sms'
 type Tab = 'Overview' | 'Accounts' | 'Schedule' | 'Approvals' | 'Questions' | 'My exams' | 'Results' | 'Billing' | 'Profile'
 type Account = { id: string; role: Role; name: string; username?: string; studentId?: string; classSection?: string; schoolName?: string; schoolSlug?: string }
 type Exam = { id: string; title: string; classSection?: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number; taken?: number }
@@ -31,6 +32,7 @@ type School = { name: string; slug: string }
 
 const emptyData: Data = { users: [], exams: [], questions: [], results: [], subjects: [] }
 const TOKEN_KEY = 'timpriest-token'
+const STUDENT_EXAM_ACCESS_ERROR = 'YOU ARE NOT AUTHORIZED TO ENTER THE EXAM DASHBOARD'
 
 function readToken(): string | null {
   try { return window.localStorage.getItem(TOKEN_KEY) } catch { return null }
@@ -45,22 +47,31 @@ function saveToken(value: string | null) {
 
 type Route = { slug: string; role: Role | null }
 
-// /<school>            -> choose how to sign in
-// /<school>/student    -> the Student sign-in page (also /teacher and /admin)
+// /cbt/<school>/<role> -> a school's role-specific sign-in page
+// /<school>/<role>     -> legacy school links, kept working
 // /admin, /teacher     -> sign-in pages that do not need a school link
 function readRoute(): Route {
   const parts = window.location.pathname.split('/').filter(Boolean).map((part) => { try { return decodeURIComponent(part).toLowerCase() } catch { return part.toLowerCase() } })
   const roleOf = (word: string): Role | null => word === 'admin' ? 'Admin' : word === 'teacher' ? 'Teacher' : word === 'student' ? 'Student' : null
-  const [first = '', second = ''] = parts
+  const [first = '', second = '', third = ''] = parts
+  if (first === 'cbt') return second ? { slug: second, role: roleOf(third) } : { slug: '', role: null }
+  if (first === 'sms') return { slug: '', role: null }
   if (!first || first === 'api' || first === 'assets') return { slug: '', role: null }
   const rootRole = roleOf(first)
   if (rootRole) return { slug: '', role: rootRole }
   return { slug: first, role: roleOf(second) }
 }
 
+function readEntryPage(): EntryPage {
+  const first = window.location.pathname.split('/').filter(Boolean)[0]?.toLowerCase()
+  if (first === 'sms') return 'sms'
+  const route = readRoute()
+  return route.slug || route.role ? 'login' : 'home'
+}
+
 function showSchoolAddress(slug?: string, role?: string) {
   if (!slug || Capacitor.isNativePlatform()) return
-  const target = `/${encodeURIComponent(slug)}${role ? `/${role.toLowerCase()}` : ''}`
+  const target = role ? schoolRolePath(slug, role) : `/cbt/${encodeURIComponent(slug)}`
   if (window.location.pathname !== target) window.history.replaceState(null, '', target)
 }
 
@@ -72,11 +83,22 @@ function greeting() {
 async function api<T>(path: string, token: string | null, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) } })
   if (!response.ok) {
-    if (response.status === 401 && token) window.dispatchEvent(new Event('timpriest-expired'))
     const error = await response.json().catch(() => ({ error: 'Request failed.' }))
+    if (token && response.status === 401) window.dispatchEvent(new Event('timpriest-expired'))
+    if (token && response.status === 403 && error.error === STUDENT_EXAM_ACCESS_ERROR) {
+      window.dispatchEvent(new CustomEvent('timpriest-expired', { detail: { message: error.error } }))
+    }
     throw new Error(error.error || 'Request failed.')
   }
   return response.status === 204 ? undefined as T : response.json()
+}
+
+function scheduledExamStart(exam: Pick<Exam, 'date' | 'time'>) {
+  return new Date(`${exam.date}T${exam.time}:00`).getTime()
+}
+
+function scheduledExamDuration(exam: Pick<Exam, 'duration' | 'subject_duration'>) {
+  return exam.subject_duration > 0 ? exam.subject_duration : exam.duration
 }
 
 function AppInner() {
@@ -84,7 +106,7 @@ function AppInner() {
   const schoolSlug = route.slug
   const [school, setSchool] = useState<School | null>(null)
   const [schoolError, setSchoolError] = useState('')
-  const [entryPage, setEntryPage] = useState<EntryPage>(route.slug || route.role ? 'login' : 'home')
+  const [entryPage, setEntryPage] = useState<EntryPage>(readEntryPage)
   const [session, setSession] = useState<Account | null>(null)
   const [token, setToken] = useState<string | null>(null)
   const [restoring, setRestoring] = useState(() => Boolean(readToken()))
@@ -96,17 +118,27 @@ function AppInner() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [showAccountForm, setShowAccountForm] = useState(false)
   const [showExamForm, setShowExamForm] = useState(false)
-
-  useEffect(() => {
-    if (!token) return
-    const ping = () => { fetch(`${API_BASE}/api/ping`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }).then((result) => { if (result.status === 401) window.dispatchEvent(new Event('timpriest-expired')) }).catch(() => undefined) } // 401 means the admin signed this device out
-    ping()
-    const interval = window.setInterval(ping, 10000)
-    return () => window.clearInterval(interval)
-  }, [token])
   const [activeExam, setActiveExam] = useState<Exam | null>(null)
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number>>({})
   const [submitted, setSubmitted] = useState(false)
+
+  useEffect(() => {
+    if (!token) return
+    const ping = () => {
+      fetch(`${API_BASE}/api/ping`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+        .then(async (result) => {
+          if (result.status === 401) window.dispatchEvent(new Event('timpriest-expired'))
+          if (result.status === 403) {
+            const body = await result.json().catch(() => ({}))
+            if (body.error === STUDENT_EXAM_ACCESS_ERROR && !activeExam) window.dispatchEvent(new CustomEvent('timpriest-expired', { detail: { message: body.error } }))
+          }
+        })
+        .catch(() => undefined)
+    }
+    ping()
+    const interval = window.setInterval(ping, 10000)
+    return () => window.clearInterval(interval)
+  }, [token, activeExam])
   const loggingOut = useRef(false)
   const examStartedAt = useRef(0) // when the student began the exam, to work out the time spent
   const [loading, setLoading] = useState(false)
@@ -120,14 +152,31 @@ function AppInner() {
   useEffect(() => { if (route.role) setLoginRole(route.role) }, [route.role])
 
   useEffect(() => {
-    const onPop = () => setRoute(readRoute())
+    const onPop = () => {
+      setRoute(readRoute())
+      setEntryPage(readEntryPage())
+    }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
   function goTo(next: Route) {
-    setRoute(next); setLoginError('')
-    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', '/' + [next.slug, next.role?.toLowerCase()].filter(Boolean).map((part) => encodeURIComponent(part as string)).join('/'))
+    setRoute(next); setEntryPage('login'); setLoginError('')
+    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', next.slug && next.role ? schoolRolePath(next.slug, next.role) : '/' + [next.slug, next.role?.toLowerCase()].filter(Boolean).map((part) => encodeURIComponent(part as string)).join('/'))
+  }
+
+  function goToProduct(product: 'cbt' | 'sms') {
+    setRoute({ slug: '', role: null })
+    setEntryPage(product === 'cbt' ? 'login' : 'sms')
+    setLoginError('')
+    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', `/${product}`)
+  }
+
+  function goHome() {
+    setRoute({ slug: '', role: null })
+    setEntryPage('home')
+    setLoginError('')
+    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', '/')
   }
 
   useEffect(() => {
@@ -138,7 +187,10 @@ function AppInner() {
         setSchool(found)
         if (found.slug && found.slug !== schoolSlug) { // the school's link was shortened or renamed: follow it
           setRoute((current) => ({ ...current, slug: found.slug }))
-          if (!Capacitor.isNativePlatform()) window.history.replaceState(null, '', '/' + [found.slug, route.role?.toLowerCase()].filter(Boolean).join('/'))
+          if (!Capacitor.isNativePlatform()) {
+            const currentRole = readRoute().role
+            window.history.replaceState(null, '', currentRole ? schoolRolePath(found.slug, currentRole) : `/cbt/${encodeURIComponent(found.slug)}`)
+          }
         }
       })
       .catch(() => setSchoolError('This school link was not found. Check the address and try again.'))
@@ -155,16 +207,32 @@ function AppInner() {
         if (!active) return
         setToken(stored); setSession(result.user); setData(loaded)
         showSchoolAddress(result.user.schoolSlug, result.user.role)
-      } catch { saveToken(null) } finally { if (active) setRestoring(false) }
+      } catch (error) {
+        saveToken(null)
+        if (error instanceof Error && error.message === STUDENT_EXAM_ACCESS_ERROR) {
+          setRoute((current) => ({ ...current, role: 'Student' }))
+          setEntryPage('login')
+          setLoginError(STUDENT_EXAM_ACCESS_ERROR)
+        }
+      } finally { if (active) setRestoring(false) }
     })()
     return () => { active = false }
   }, [])
 
   useEffect(() => {
-    const expire = () => { saveToken(null); setToken(null); setSession(null); setData(emptyData); setActiveExam(null) }
+    const expire = (event: Event) => {
+      const message = event instanceof CustomEvent && typeof event.detail?.message === 'string' ? event.detail.message : ''
+      if (message === STUDENT_EXAM_ACCESS_ERROR && activeExam && !submitted) return
+      saveToken(null); setToken(null); setSession(null); setData(emptyData); setActiveExam(null)
+      if (message === STUDENT_EXAM_ACCESS_ERROR) {
+        setRoute((current) => ({ ...current, role: 'Student' }))
+        setEntryPage('login')
+        setLoginError(STUDENT_EXAM_ACCESS_ERROR)
+      }
+    }
     window.addEventListener('timpriest-expired', expire)
     return () => window.removeEventListener('timpriest-expired', expire)
-  }, [])
+  }, [activeExam, submitted])
 
   useEffect(() => {
     if (!session?.schoolSlug) return
@@ -190,7 +258,11 @@ function AppInner() {
   const showNotice = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3000) }
   const beginExam = (exam: Exam) => {
     if (data.examsOpen === false) { showNotice('Exams are unavailable because this school has run out of credits. Please tell your school admin.'); return }
-    examStartedAt.current = Date.now()
+    const startsAt = scheduledExamStart(exam)
+    const endsAt = startsAt + scheduledExamDuration(exam) * 60000
+    if (Date.now() < startsAt) { showNotice(`This exam is scheduled to start at ${exam.time}.`); return }
+    if (!Number.isFinite(endsAt) || Date.now() >= endsAt) { showNotice('The scheduled time for this exam has ended.'); return }
+    examStartedAt.current = startsAt
     setActiveExam(exam)
   }
 
@@ -232,12 +304,12 @@ function AppInner() {
 
   function logout() {
     const slug = session?.schoolSlug
-    const goToSchool = () => { if (slug && !Capacitor.isNativePlatform()) window.location.assign(`/${slug}/${(session?.role || 'student').toLowerCase()}`) }
+    const goToSchool = () => { if (slug && !Capacitor.isNativePlatform()) window.location.assign(schoolRolePath(slug, session?.role || 'student')) }
     if (token) void api('/logout', token, { method: 'POST' }).catch(() => undefined).finally(goToSchool)
     else goToSchool()
     saveToken(null)
     setToken(null); setSession(null); setActiveExam(null); setSubmitted(false); setData(emptyData); setMenuOpen(false); setEntryPage('login')
-    if (!Capacitor.isNativePlatform() && session?.schoolSlug) window.location.assign(`/${session.schoolSlug}/${session.role.toLowerCase()}`)
+    if (!Capacitor.isNativePlatform() && session?.schoolSlug) window.location.assign(schoolRolePath(session.schoolSlug, session.role))
   }
 
   async function addAccount(event: FormEvent<HTMLFormElement>) {
@@ -293,7 +365,11 @@ function AppInner() {
 
   function renderLogin() {
     if (!route.role) return <RoleChooser schoolName={school?.name} schoolError={schoolError} onChoose={(role) => goTo({ slug: route.slug, role })} />
-    const cleanLink = (value: string) => value.trim().replace(/\/+$/, '').split('/').pop()?.toLowerCase() || ''
+    const cleanLink = (value: string) => {
+      const parts = value.trim().replace(/\/+$/, '').split('/').filter(Boolean)
+      const cbtIndex = parts.findIndex((part) => part.toLowerCase() === 'cbt')
+      return (cbtIndex >= 0 ? parts[cbtIndex + 1] : parts.at(-1))?.toLowerCase() || ''
+    }
     return (
       <RoleSignIn
         role={route.role}
@@ -311,8 +387,9 @@ function AppInner() {
   }
 
   if (restoring) return <div className="login-page"><div className="login-panel"><div className="login-box"><p className="login-subtitle">Loading...</p></div></div></div>
-  if (!session && entryPage === 'home') return <PublicHome onSignIn={() => setEntryPage('login')} onRegister={() => setEntryPage('register')} />
-  if (!session && entryPage === 'register') return <AdminRegistration onBack={() => setEntryPage('home')} onComplete={(slug) => { if (Capacitor.isNativePlatform()) setEntryPage('login'); else window.location.assign(`/${slug}`) }} />
+  if (!session && entryPage === 'home') return <PublicHome onSignIn={() => goToProduct('cbt')} onRegister={() => { goToProduct('cbt'); setEntryPage('register') }} onSms={() => goToProduct('sms')} onHome={goHome} />
+  if (!session && entryPage === 'sms') return <PublicHome onSignIn={() => goToProduct('cbt')} onRegister={() => { goToProduct('cbt'); setEntryPage('register') }} onSms={() => goToProduct('sms')} onHome={goHome} journey="sms" />
+  if (!session && entryPage === 'register') return <AdminRegistration onBack={goHome} onComplete={(slug) => { if (Capacitor.isNativePlatform()) setEntryPage('login'); else window.location.assign(schoolRolePath(slug, 'admin')) }} />
   if (!session) return renderLogin()
 
   const isAdmin = session.role === 'Admin'
@@ -662,9 +739,13 @@ function ConnectionBadge() {
     return () => { stopped = true; window.clearInterval(interval) }
   }, [])
   return (
-    <div className={`conn-badge ${connected ? 'ok' : 'lost'}`} role="status" aria-live="polite">
-      <span className="conn-dot" />
-      {connected ? 'Connected to school server' : 'Disconnected from school server. Keep this window open. Reconnecting...'}
+    <div
+      className={`conn-badge ${connected ? 'ok' : 'lost'}`}
+      role="status"
+      aria-label={connected ? 'Connected to school server' : 'Disconnected from school server. Reconnecting...'}
+      title={connected ? 'Connected to school server' : 'Disconnected from school server. Keep this window open. Reconnecting...'}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M1 21h4V9H1v12zM23 10c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z" /></svg>
     </div>
   )
 }

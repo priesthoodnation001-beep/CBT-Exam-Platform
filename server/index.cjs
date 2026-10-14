@@ -114,6 +114,43 @@ function classMatches(examClasses, studentClass) {
   return wanted.includes(String(studentClass || '').trim().toLowerCase())
 }
 
+const STUDENT_EXAM_ACCESS_ERROR = 'YOU ARE NOT AUTHORIZED TO ENTER THE EXAM DASHBOARD'
+
+function scheduledExamStart(exam) {
+  const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(exam.date || ''))
+  const time = /^(\d{2}):(\d{2})$/.exec(String(exam.time || ''))
+  if (!date || !time) return Number.NaN
+  const [, year, month, day] = date
+  const [, hours, minutes] = time
+  const start = new Date(Number(year), Number(month) - 1, Number(day), Number(hours), Number(minutes)).getTime()
+  const check = new Date(start)
+  return check.getFullYear() === Number(year) && check.getMonth() === Number(month) - 1 && check.getDate() === Number(day) && check.getHours() === Number(hours) && check.getMinutes() === Number(minutes) ? start : Number.NaN
+}
+
+function scheduledExamHasTime(exam, now = Date.now()) {
+  const startsAt = scheduledExamStart(exam)
+  const duration = Number(exam.subject_duration) > 0 ? Number(exam.subject_duration) : Number(exam.duration)
+  return Number.isFinite(startsAt) && Number.isFinite(duration) && duration > 0 && startsAt + duration * 60000 > now
+}
+
+function studentHasExamAccess(userId, schoolId, now = Date.now()) {
+  const studentClass = studentClassOf(userId)
+  const exams = rows(
+    `SELECT exams.date, exams.time, exams.duration, exams.class_section, subject_settings.duration AS subject_duration
+     FROM exams
+     JOIN subject_settings ON subject_settings.subject = exams.subject AND subject_settings.school_id = exams.school_id AND subject_settings.approved = 1
+     WHERE exams.school_id = ? AND exams.status = 'Scheduled'
+       AND NOT EXISTS (SELECT 1 FROM submissions WHERE submissions.exam_id = exams.id AND submissions.student_id = ?)
+       AND EXISTS (SELECT 1 FROM questions WHERE questions.school_id = exams.school_id AND questions.subject = exams.subject
+         AND (questions.exam_id = exams.id OR questions.exam_id IS NULL))`,
+    [schoolId, userId]
+  )
+  return exams.some((exam) => {
+    if (!classMatches(exam.class_section, studentClass)) return false
+    return scheduledExamHasTime(exam, now)
+  })
+}
+
 function studentClassOf(userId) {
   return rows('SELECT class_section FROM users WHERE id = ?', [userId]).at(0)?.class_section || ''
 }
@@ -326,6 +363,10 @@ function authenticate(request, response, next) {
   const session = token ? rows('SELECT * FROM sessions WHERE token_hash = ? AND expires_at > ?', [hashToken(token), Date.now()]).at(0) : undefined
   const user = session ? loadUser(session.user_id) : undefined
   if (!user) return response.status(401).json({ error: 'Your session has expired. Please sign in again.' })
+  const submittingExam = request.method === 'POST' && request.path === '/api/submissions'
+  if (user.role === 'Student' && !submittingExam && !studentHasExamAccess(user.id, user.school_id)) {
+    return response.status(403).json({ error: STUDENT_EXAM_ACCESS_ERROR })
+  }
   request.user = { ...publicUser(user), schoolId: user.school_id }
   request.token = token
   const before = presence.get(user.id)
@@ -421,6 +462,9 @@ app.post('/api/login', async (request, response) => {
     recordFailure(key)
     return response.status(401).json({ error: notice || (role === 'Student' ? 'Student ID not found.' : 'Username or password is incorrect.') })
   }
+  if (role === 'Student' && !studentHasExamAccess(user.id, user.school_id)) {
+    return response.status(403).json({ error: STUDENT_EXAM_ACCESS_ERROR })
+  }
   attempts.delete(key)
   if (OFFLINE && role === 'Admin') {
     const slug = rows('SELECT slug FROM schools WHERE id = ?', [user.school_id]).at(0)?.slug
@@ -506,7 +550,7 @@ app.get('/api/data', authenticate, (request, response) => {
     [request.user.id, schoolId]
   )
   const myClass = isStudent ? studentClassOf(request.user.id) : ''
-  const exams = isStudent ? allExams.filter((exam) => classMatches(exam.classSection, myClass)) : allExams // students only see exams for their own class
+  const exams = isStudent ? allExams.filter((exam) => classMatches(exam.classSection, myClass) && (exam.taken || (exam.status === 'Scheduled' && scheduledExamHasTime(exam)))) : allExams // students only see their class and exams that have not expired
   const questionSql = isStudent
     ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? ORDER BY questions.created_at'
     : 'SELECT id, exam_id, subject, text, options, answer FROM questions WHERE school_id = ? ORDER BY created_at'
@@ -640,6 +684,11 @@ app.post('/api/submissions', authenticate, requireRole('Student'), (request, res
   const exam = rows('SELECT exams.* FROM exams JOIN subject_settings ON subject_settings.subject = exams.subject AND subject_settings.school_id = exams.school_id AND subject_settings.approved = 1 WHERE exams.id = ? AND exams.school_id = ? AND exams.status = \'Scheduled\'', [examId, schoolId]).at(0)
   if (!exam) return response.status(404).json({ error: 'Exam is not available.' })
   if (!classMatches(exam.class_section, studentClassOf(request.user.id))) return response.status(403).json({ error: 'This exam is not for your class.' })
+  const subjectDuration = rows('SELECT duration FROM subject_settings WHERE school_id = ? AND subject = ? AND approved = 1', [schoolId, exam.subject]).at(0)?.duration
+  const startsAt = scheduledExamStart(exam)
+  const duration = Number(subjectDuration) > 0 ? Number(subjectDuration) : Number(exam.duration)
+  const now = Date.now()
+  if (!Number.isFinite(startsAt) || !Number.isFinite(duration) || duration <= 0 || now < startsAt) return response.status(403).json({ error: 'This exam has not started yet.' })
   if (rows('SELECT id FROM submissions WHERE exam_id = ? AND student_id = ?', [examId, request.user.id]).length) return response.status(409).json({ error: 'You have already submitted this exam.' })
   const examQuestions = rows('SELECT questions.id, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? AND (questions.exam_id = ? OR (questions.exam_id IS NULL AND questions.subject = ?))', [schoolId, examId, exam.subject])
   const total = examQuestions.length
