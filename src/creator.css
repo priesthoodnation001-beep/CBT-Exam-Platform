@@ -721,6 +721,18 @@
 }
 
 @media (max-width: 880px) {
+  .cx {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cx-main {
+    grid-column: 1;
+    width: 100%;
+    min-width: 0;
+  }
+
   .cx-side {
     position: sticky;
     top: 0;
