@@ -34,7 +34,8 @@ const ICONS = {
   chat: 'M4 5h16v11H9l-5 4V5z M8 9h8 M8 12.5h5',
   send: 'M4 12l16-8-6 16-3-7-7-1z',
   plus: 'M12 5v14 M5 12h14',
-  copy: 'M9 9h10v11H9z M5 15V4h10'
+  copy: 'M9 9h10v11H9z M5 15V4h10',
+  menu: 'M4 7h16 M4 12h16 M4 17h16'
 }
 
 function Icon({ name, size = 20 }: { name: keyof typeof ICONS; size?: number }) {
@@ -83,8 +84,9 @@ export default function CreatorPage() {
   const [passwordFor, setPasswordFor] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmSlug, setConfirmSlug] = useState('')
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
-  const signOut = () => { sessionStorage.removeItem(TOKEN_KEY); setToken(null); setOverview(null); setDetail(null) }
+  const signOut = () => { sessionStorage.removeItem(TOKEN_KEY); setToken(null); setOverview(null); setDetail(null); setMobileNavOpen(false) }
 
   // runs an action, shows any error, and returns to sign-in if the session ran out
   const guard = async (action: () => Promise<void>) => {
@@ -130,6 +132,20 @@ export default function CreatorPage() {
     const timer = window.setTimeout(() => setMessage(''), 7000)
     return () => window.clearTimeout(timer)
   }, [message])
+
+  useEffect(() => {
+    if (!mobileNavOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [mobileNavOpen])
 
   const login = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -314,24 +330,26 @@ export default function CreatorPage() {
   const currentCredits = detail ? (overview?.schools.find((school) => school.id === detail.school.id)?.credits ?? 0) : 0
 
   return (
-    <div className="cx">
-      <aside className="cx-side">
+    <div className={`cx ${mobileNavOpen ? 'cx-mobile-nav-open' : ''}`}>
+      <aside className="cx-side" id="creator-navigation" aria-label="Creator workspace navigation">
         <div className="cx-brand"><img src="/logo.svg" alt="" /><div><strong>TIMPRIEST EDU</strong><span>Creator console</span></div></div>
         <span className="cx-nav-label">WORKSPACE</span>
         <nav className="cx-nav" aria-label="Creator workspace">
-          <button className={tab === 'Schools' ? 'active' : ''} aria-current={tab === 'Schools' ? 'page' : undefined} onClick={() => setTab('Schools')}><Icon name="schools" /><span>Schools</span><small>{overview?.totals.schools ?? '—'}</small></button>
-          <button className={tab === 'Payments' ? 'active' : ''} aria-current={tab === 'Payments' ? 'page' : undefined} onClick={() => setTab('Payments')}><Icon name="payments" /><span>Payments</span>{pendingCount > 0 && <small className="cx-nav-count">{pendingCount}</small>}</button>
-          <button className={tab === 'Support' ? 'active' : ''} aria-current={tab === 'Support' ? 'page' : undefined} onClick={() => setTab('Support')}><Icon name="chat" /><span>Support</span>{waiting > 0 && <small className="cx-nav-count">{waiting}</small>}</button>
-          <button className={tab === 'Activity' ? 'active' : ''} aria-current={tab === 'Activity' ? 'page' : undefined} onClick={() => setTab('Activity')}><Icon name="activity" /><span>Activity</span></button>
+          <button className={tab === 'Schools' ? 'active' : ''} aria-current={tab === 'Schools' ? 'page' : undefined} onClick={() => { setTab('Schools'); setMobileNavOpen(false) }}><Icon name="schools" /><span>Schools</span><small>{overview?.totals.schools ?? '—'}</small></button>
+          <button className={tab === 'Payments' ? 'active' : ''} aria-current={tab === 'Payments' ? 'page' : undefined} onClick={() => { setTab('Payments'); setMobileNavOpen(false) }}><Icon name="payments" /><span>Payments</span>{pendingCount > 0 && <small className="cx-nav-count">{pendingCount}</small>}</button>
+          <button className={tab === 'Support' ? 'active' : ''} aria-current={tab === 'Support' ? 'page' : undefined} onClick={() => { setTab('Support'); setMobileNavOpen(false) }}><Icon name="chat" /><span>Support</span>{waiting > 0 && <small className="cx-nav-count">{waiting}</small>}</button>
+          <button className={tab === 'Activity' ? 'active' : ''} aria-current={tab === 'Activity' ? 'page' : undefined} onClick={() => { setTab('Activity'); setMobileNavOpen(false) }}><Icon name="activity" /><span>Activity</span></button>
         </nav>
         <div className="cx-side-foot">
           <div className="cx-owner-status"><span /><div><strong>Owner access</strong><small>Creator account</small></div></div>
           <button onClick={signOut}><Icon name="logout" />Sign out</button>
         </div>
       </aside>
+      {mobileNavOpen && <button className="cx-mobile-backdrop" type="button" aria-label="Close navigation menu" onClick={() => setMobileNavOpen(false)} />}
 
       <main className="cx-main">
         <header className="cx-top">
+          <button className="cx-mobile-menu" type="button" aria-label={mobileNavOpen ? 'Close navigation menu' : 'Open navigation menu'} aria-controls="creator-navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen(!mobileNavOpen)}><Icon name="menu" size={20} /></button>
           <div className="cx-top-heading"><span>PLATFORM WORKSPACE</span><h1>{titles[tab][0]}</h1><p>{titles[tab][1]}</p></div>
           <div className="cx-top-actions"><span className="cx-owner-pill"><span />Owner workspace</span><button className="cx-btn" onClick={() => void guard(loadAll)} disabled={busy}><Icon name="refresh" size={17} />{busy ? 'Working...' : 'Refresh'}</button></div>
         </header>

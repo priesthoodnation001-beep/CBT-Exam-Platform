@@ -839,3 +839,84 @@
   .cx-nav button { padding-inline: 8px; }
   .cx-side-foot button { padding-inline: 7px; }
 }
+
+.cx-mobile-menu, .cx-mobile-backdrop { display: none; }
+
+@media (max-width: 880px) {
+  .cx-side {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 81;
+    display: flex;
+    width: min(300px, 86vw);
+    height: 100vh;
+    height: 100dvh;
+    min-height: 100vh;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+    padding: max(22px, env(safe-area-inset-top)) 16px max(18px, env(safe-area-inset-bottom));
+    overflow-x: hidden;
+    overflow-y: auto;
+    border-right: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 14px 0 36px rgba(8, 24, 15, 0.17);
+    visibility: hidden;
+    transform: translateX(-105%);
+    transition: transform 220ms ease, visibility 0s linear 220ms;
+    will-change: transform;
+  }
+
+  .cx-mobile-nav-open .cx-side { visibility: visible; transform: translateX(0); transition: transform 220ms ease; }
+  .cx-brand { min-height: 54px; gap: 12px; padding: 0 8px 15px; }
+  .cx-brand img { width: 42px; height: 42px; }
+  .cx-brand strong { display: block; font-size: 0.86rem; }
+  .cx-brand span { display: block; font-size: 0.72rem; }
+  .cx-nav-label { display: block; padding-inline: 12px; }
+  .cx-nav {
+    display: grid;
+    width: 100%;
+    gap: 6px;
+    margin: 7px 0 0;
+    padding: 0;
+    overflow: visible;
+  }
+  .cx-nav button { width: 100%; min-height: 46px; flex: none; justify-content: flex-start; padding: 9px 12px; gap: 11px; font-size: 0.86rem; }
+  .cx-nav button svg { width: 19px; height: 19px; }
+  .cx-nav button > small { min-width: 22px; padding: 2px 6px; font-size: 0.68rem; }
+  .cx-owner-status { display: flex; margin-top: auto; }
+  .cx-side-foot { display: grid; grid-column: auto; grid-row: auto; gap: 4px; margin: 0; }
+  .cx-side-foot button { min-height: 42px; justify-content: flex-start; padding: 9px 12px; gap: 11px; font-size: 0.84rem; }
+
+  .cx-mobile-menu {
+    display: inline-flex;
+    width: 40px;
+    height: 40px;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid #dce5dc;
+    border-radius: 10px;
+    background: #fff;
+    color: #285b3d;
+    cursor: pointer;
+  }
+
+  .cx-mobile-menu:hover { background: #f0f6ef; }
+  .cx-mobile-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: rgba(8, 22, 14, 0.48);
+    animation: cx-fade 160ms ease;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cx-side { transition: none; }
+}
