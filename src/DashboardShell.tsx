@@ -84,7 +84,10 @@ export default function DashboardShell({ role, centre, userName, detail, items, 
         <header className="ds-top">
           <button className="ds-burger" type="button" aria-label="Open or close the menu" onClick={() => onMenu(!menuOpen)}><Icon name="menu" size={22} /></button>
           <div className="ds-crumb"><strong>{tab}</strong><span>{role === 'Admin' ? 'Administrator' : 'Teacher'}</span></div>
-          <div className="ds-top-right"><span className="ds-online"><span className="ds-dot" />Connected</span><span className="ds-avatar small">{initials(userName)}</span></div>
+          <div className="ds-top-right">
+            <span className="ds-portal-label"><span className="ds-portal-mark" />{role} portal</span>
+            <div className="ds-top-user"><span className="ds-avatar small">{initials(userName)}</span><div><strong>{userName}</strong><small>{role}</small></div></div>
+          </div>
         </header>
         <main className="ds-content">{children}</main>
       </div>

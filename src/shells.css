@@ -601,3 +601,651 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Role portal redesign: distinct palettes and a locally available, offline-safe typeface. */
+.ds {
+  --ds-font: 'Trebuchet MS', 'Segoe UI', sans-serif;
+  --role-accent: #28724d;
+  --role-accent-soft: #e5f2e9;
+  font-family: var(--ds-font);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.ds-admin {
+  --bg: #f3f5f0;
+  --side-a: #183d30;
+  --side-b: #102c23;
+  --btn: #216445;
+  --head: #193a2d;
+  --eyebrow: #a16e10;
+  --acc: #e8bd62;
+  --acc-text: #ffe4a0;
+  --role-accent: #a97719;
+  --role-accent-soft: #f8f0df;
+}
+
+.ds-teacher {
+  --bg: #f1f3f9;
+  --side-a: #283666;
+  --side-b: #1c284f;
+  --btn: #495fa6;
+  --head: #25345e;
+  --eyebrow: #495fa6;
+  --acc: #a9b8ff;
+  --acc-text: #dce3ff;
+  --role-accent: #5367ad;
+  --role-accent-soft: #e9edfa;
+}
+
+.ds-student {
+  --role-accent: #247347;
+  --role-accent-soft: #e7f3e9;
+  background: #f4f7f2;
+  font-family: var(--ds-font);
+}
+
+.ds :is(h1, h2, h3, .stat-value) {
+  font-family: var(--ds-font);
+  letter-spacing: -0.04em;
+}
+
+.ds-admin, .ds-teacher {
+  grid-template-columns: 252px minmax(0, 1fr);
+  background: var(--bg);
+}
+
+.ds-side {
+  padding: 24px 15px 18px;
+  background: linear-gradient(160deg, var(--side-a), var(--side-b) 76%);
+}
+
+.ds-brand {
+  min-height: 57px;
+  padding-inline: 9px;
+}
+
+.ds-brand img {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+}
+
+.ds-brand strong {
+  font-size: 0.9rem;
+  letter-spacing: 0.045em;
+}
+
+.ds-brand small {
+  margin-top: 2px;
+  letter-spacing: 0.025em;
+}
+
+.ds-centre {
+  min-height: 64px;
+  margin: 11px 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.ds-centre strong {
+  font-size: 0.84rem;
+}
+
+.ds-centre small, .ds-user small {
+  letter-spacing: 0.035em;
+}
+
+.ds-nav {
+  gap: 5px;
+}
+
+.ds-nav button {
+  min-height: 44px;
+  gap: 11px;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: rgba(244, 248, 255, 0.76);
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: color 150ms ease, background 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.ds-nav button svg {
+  width: 19px;
+  height: 19px;
+  opacity: 0.8;
+}
+
+.ds-nav button:hover {
+  transform: translateX(2px);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.ds-nav button.active {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.13);
+  box-shadow: inset 3px 0 0 var(--acc);
+}
+
+.ds-admin .ds-nav button.active svg {
+  color: #f1ce7b;
+}
+
+.ds-teacher .ds-nav button.active svg {
+  color: #c4ceff;
+}
+
+.ds-side-foot {
+  gap: 8px;
+}
+
+.ds-logout {
+  min-height: 42px;
+  border-radius: 10px;
+  font-size: 0.88rem;
+}
+
+.ds-user {
+  min-height: 62px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.075);
+}
+
+.ds-user strong, .ds-top-user strong {
+  display: block;
+  overflow: hidden;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-user small, .ds-top-user small {
+  display: block;
+  font-size: 0.7rem;
+  opacity: 0.72;
+}
+
+.ds-avatar {
+  width: 36px;
+  height: 36px;
+  background: var(--acc);
+}
+
+.ds-teacher .ds-avatar {
+  color: #1d2850;
+}
+
+.ds-top {
+  min-height: 70px;
+  padding: 10px clamp(20px, 3.2vw, 46px);
+  border-color: #e6e9e3;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 3px 14px rgba(33, 49, 38, 0.035);
+}
+
+.ds-crumb {
+  gap: 11px;
+}
+
+.ds-crumb strong {
+  color: #253a30;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.ds-crumb span {
+  padding-left: 11px;
+  border-left: 1px solid #e0e5df;
+  color: #839087;
+  font-size: 0.78rem;
+}
+
+.ds-top-right {
+  gap: 18px;
+}
+
+.ds-portal-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  border: 1px solid var(--role-accent-soft);
+  border-radius: 999px;
+  background: var(--role-accent-soft);
+  color: var(--role-accent);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.ds-portal-mark {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ds-top-user {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.ds-top-user > div {
+  min-width: 0;
+  max-width: 180px;
+  color: #31483a;
+}
+
+.ds-top-user .ds-avatar {
+  background: var(--role-accent-soft);
+  color: var(--role-accent);
+}
+
+.ds-content {
+  padding: 0;
+}
+
+.ds-content > .content-wrap {
+  width: 100%;
+  max-width: 1420px;
+  padding: 32px clamp(22px, 3.4vw, 50px) 58px;
+}
+
+.ds-admin .intro, .ds-teacher .intro {
+  min-height: 194px;
+  align-items: center;
+  margin-bottom: 26px;
+  padding: 32px clamp(24px, 3.6vw, 44px);
+  border: 0;
+  border-radius: 22px;
+  box-shadow: 0 18px 36px rgba(27, 48, 35, 0.12);
+}
+
+.ds-admin .intro {
+  background:
+    radial-gradient(ellipse at 88% 8%, rgba(240, 206, 130, 0.22), transparent 35%),
+    linear-gradient(115deg, #204a37, #173b2d 72%);
+}
+
+.ds-teacher .intro {
+  background:
+    radial-gradient(ellipse at 88% 8%, rgba(188, 199, 255, 0.22), transparent 35%),
+    linear-gradient(115deg, #394c87, #283866 72%);
+}
+
+.ds-admin .intro h1, .ds-teacher .intro h1 {
+  color: #fff;
+  font-size: clamp(1.9rem, 3.2vw, 2.65rem);
+  font-weight: 700;
+  letter-spacing: -0.055em;
+}
+
+.ds-admin .intro .eyebrow, .ds-teacher .intro .eyebrow {
+  color: var(--acc);
+  font-size: 0.69rem;
+  letter-spacing: 0.16em;
+}
+
+.ds-admin .intro-copy, .ds-teacher .intro-copy {
+  max-width: 570px;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 0.9rem;
+}
+
+.ds-admin .intro .primary-button, .ds-teacher .intro .primary-button {
+  border: 0;
+  background: #f0cf82;
+  color: #223728;
+  box-shadow: 0 8px 18px rgba(8, 26, 17, 0.2);
+}
+
+.ds-teacher .intro .primary-button {
+  background: #dce3ff;
+  color: #27365f;
+}
+
+.ds .primary-button {
+  min-height: 44px;
+  border-radius: 10px;
+  font-family: var(--ds-font);
+  font-size: 0.86rem;
+  transition: transform 150ms ease, box-shadow 150ms ease, filter 150ms ease;
+}
+
+.ds .primary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.04);
+}
+
+.ds .stats-grid {
+  gap: 15px;
+  margin-bottom: 36px;
+}
+
+.ds .stat-card {
+  min-height: 116px;
+  padding: 22px 23px;
+  border: 1px solid #e5e9e3;
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgba(35, 54, 40, 0.035);
+}
+
+.ds .stat-card::before {
+  inset: 20px auto 20px 0;
+  width: 4px;
+  border-radius: 0 4px 4px 0;
+  background: var(--role-accent);
+}
+
+.ds .stat-value {
+  color: var(--role-accent);
+  font-size: 1.9rem;
+  font-weight: 700;
+}
+
+.ds .stat-label {
+  color: #31483a;
+  font-size: 0.86rem;
+}
+
+.ds .stat-note {
+  font-size: 0.74rem;
+}
+
+.ds .section-heading h2 {
+  color: #253b2e;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.ds .section-heading .eyebrow {
+  color: var(--role-accent);
+  font-size: 0.67rem;
+  letter-spacing: 0.14em;
+}
+
+.ds .panel, .ds .form-panel, .ds .profile-panel, .ds .exam-card, .ds .question-card, .ds .approval-card {
+  border-color: #e5e9e3;
+  border-radius: 15px;
+  box-shadow: 0 5px 20px rgba(35, 54, 40, 0.04);
+}
+
+.ds .panel, .ds .form-panel {
+  padding: 23px;
+}
+
+.ds .panel h3, .ds .form-panel h3, .ds .profile-panel h3, .ds .exam-card h3, .ds .question-card h3 {
+  color: #294236;
+  font-size: 1.03rem;
+  font-weight: 700;
+}
+
+.ds .panel-header p {
+  margin-top: 6px;
+  font-size: 0.76rem;
+}
+
+.ds .session {
+  min-height: 76px;
+}
+
+.ds .date-block, .ds .exam-card-date {
+  background: var(--role-accent-soft);
+  color: var(--role-accent);
+}
+
+.ds .quick-actions button {
+  border-radius: 11px;
+}
+
+.ds .quick-actions button > span {
+  color: #354b3e;
+}
+
+.ds-student {
+  background:
+    radial-gradient(ellipse at 8% 20%, #e9f3e8 0, transparent 38%),
+    #f6f7f2;
+}
+
+.ds-student .ds-sbar {
+  background: #fff;
+  color: #263e31;
+  box-shadow: 0 1px 0 #e6ebe4, 0 7px 22px rgba(35, 63, 48, 0.055);
+}
+
+.ds-student .ds-sbar-in {
+  max-width: 1360px;
+  min-height: 76px;
+  padding: 10px clamp(20px, 4vw, 48px);
+}
+
+.ds-student .ds-brand strong {
+  color: #204b35;
+}
+
+.ds-student .ds-brand small {
+  color: #839187;
+  opacity: 1;
+}
+
+.ds-student .ds-pills {
+  gap: 4px;
+}
+
+.ds-student .ds-pills button {
+  min-height: 42px;
+  padding: 8px 13px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #66756b;
+  font-family: var(--ds-font);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.ds-student .ds-pills button:hover {
+  background: #f3f6f1;
+  color: #28553a;
+}
+
+.ds-student .ds-pills button.active {
+  border-color: #dcebdd;
+  background: #eaf4ea;
+  color: #245d3b;
+}
+
+.ds-student .ds-avatar {
+  background: #e5f2e7;
+  color: #28724d;
+}
+
+.ds-student .ds-out {
+  border-color: #dfe8df;
+  border-radius: 10px;
+  color: #53665a;
+  font-family: var(--ds-font);
+  font-size: 0.8rem;
+}
+
+.ds-student .ds-out:hover {
+  background: #f2f6f1;
+}
+
+.ds-student .ds-smain {
+  max-width: 1240px;
+  padding: 36px clamp(20px, 4vw, 48px) 90px;
+}
+
+.ds-student .intro {
+  min-height: 224px;
+  align-items: center;
+  padding: 34px clamp(25px, 4vw, 48px);
+  border: 0;
+  border-radius: 24px;
+  background:
+    radial-gradient(ellipse at 87% 8%, rgba(157, 218, 163, 0.17), transparent 35%),
+    linear-gradient(115deg, #23623e, #17462f 75%);
+  box-shadow: 0 18px 36px rgba(25, 76, 46, 0.15);
+}
+
+.ds-student .intro h1 {
+  color: #fff;
+  font-size: clamp(1.95rem, 4vw, 2.8rem);
+  font-weight: 700;
+  letter-spacing: -0.055em;
+}
+
+.ds-student .intro .eyebrow {
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+}
+
+.ds-student .intro .intro-copy {
+  max-width: 540px;
+  font-size: 0.9rem;
+}
+
+.ds-student .intro .primary-button {
+  border: 0;
+  border-radius: 11px;
+  background: #f4d977;
+  color: #26351e;
+}
+
+.ds-student .stats-grid {
+  gap: 15px;
+  margin: -18px 20px 36px;
+  position: relative;
+}
+
+.ds-student .stat-card {
+  min-height: 108px;
+  border-radius: 14px;
+  box-shadow: 0 7px 22px rgba(35, 63, 48, 0.07);
+}
+
+.ds-student .panel, .ds-student .exam-card, .ds-student .score-card, .ds-student .result-empty {
+  border-color: #e4eae2;
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 7px 22px rgba(35, 63, 48, 0.045);
+}
+
+.ds-student .section-heading h2 {
+  color: #254333;
+}
+
+.ds-student .start-link {
+  border-radius: 9px;
+  background: #e9f3e9;
+  color: #23643d;
+  font-family: var(--ds-font);
+}
+
+.ds-student.exam-mode {
+  background: #f5f7f4;
+}
+
+.ds-student.exam-mode .ds-sbar {
+  background: #fff;
+}
+
+.ds :where(button, input, select, textarea):focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--role-accent) 50%, white);
+  outline-offset: 2px;
+}
+
+@media (max-width: 900px) {
+  .ds-admin, .ds-teacher {
+    display: block;
+  }
+
+  .ds-side {
+    padding-top: 24px;
+  }
+
+  .ds-content > .content-wrap {
+    padding: 24px 20px 44px;
+  }
+
+  .ds-student .ds-sbar-in {
+    min-height: 68px;
+  }
+
+  .ds-student .ds-pills {
+    border-top: 1px solid rgba(30, 62, 40, 0.09);
+    padding-top: 8px;
+  }
+}
+
+@media (max-width: 560px) {
+  .ds-top {
+    min-height: 62px;
+    padding-inline: 13px;
+  }
+
+  .ds-crumb {
+    gap: 7px;
+  }
+
+  .ds-crumb strong {
+    font-size: 0.9rem;
+  }
+
+  .ds-crumb span {
+    font-size: 0.68rem;
+  }
+
+  .ds-top-right {
+    gap: 8px;
+  }
+
+  .ds-portal-label {
+    display: none;
+  }
+
+  .ds-top-user > div {
+    display: none;
+  }
+
+  .ds-content > .content-wrap {
+    padding: 18px 14px 38px;
+  }
+
+  .ds-admin .intro, .ds-teacher .intro {
+    min-height: 0;
+    padding: 24px 21px;
+  }
+
+  .ds-admin .intro h1, .ds-teacher .intro h1 {
+    font-size: 1.9rem;
+  }
+
+  .ds-student .ds-sbar-in {
+    padding-inline: 14px;
+  }
+
+  .ds-student .ds-smain {
+    padding: 18px 14px 70px;
+  }
+
+  .ds-student .intro {
+    min-height: 0;
+    padding: 26px 22px;
+    border-radius: 19px;
+  }
+
+  .ds-student .stats-grid {
+    grid-template-columns: 1fr;
+    margin: -12px 10px 28px;
+  }
+}
