@@ -268,15 +268,39 @@ export default function CreatorPage() {
   if (!token) {
     return (
       <div className="cx-login">
+        <aside className="cx-login-story">
+          <div className="cx-login-brand">
+            <img src="/logo.svg" alt="" />
+            <div><strong>TIMPRIEST EDU</strong><span>Platform management</span></div>
+          </div>
+          <div className="cx-login-story-copy">
+            <span className="cx-login-kicker"><span /> CREATOR ACCOUNT</span>
+            <h2>Every school.<br /><em>One clear view.</em></h2>
+            <p>Manage your education platform from one focused workspace.</p>
+            <ul>
+              <li>Keep track of registered schools</li>
+              <li>Review payments and account activity</li>
+              <li>Reply to school support requests</li>
+            </ul>
+          </div>
+          <div className="cx-login-story-foot"><span className="cx-login-foot-mark">T</span><span>TOOLS FOR BETTER LEARNING</span></div>
+        </aside>
+        <main className="cx-login-panel">
         <form className="cx-login-card" onSubmit={login}>
-          <img src="/logo.svg" alt="" />
-          <h1>Creator console</h1>
-          <p>For the owner of TIMPRIEST EDU only.</p>
-          {message && <div className="cx-error">{message}</div>}
-          <label>Username<input className="cx-input" name="username" autoComplete="username" required /></label>
-          <label>Password<input className="cx-input" name="password" type="password" autoComplete="current-password" required /></label>
-          <button className="cx-btn primary" type="submit" disabled={busy}>{busy ? 'Signing in...' : 'Sign in'}</button>
+          <div className="cx-login-card-head">
+            <span className="cx-login-avatar"><img src="/logo.svg" alt="" /></span>
+            <span className="cx-login-card-kicker">TIMPRIEST EDU · CREATOR</span>
+            <h1>Welcome back</h1>
+            <p>Sign in to continue to your platform workspace.</p>
+          </div>
+          {message && <div className="cx-error" role="alert">{message}</div>}
+          <label className="cx-login-label">Username<input className="cx-input" name="username" autoComplete="username" placeholder="Enter your username" required /></label>
+          <label className="cx-login-label">Password<input className="cx-input" name="password" type="password" autoComplete="current-password" placeholder="Enter your password" required /></label>
+          <button className="cx-btn primary" type="submit" disabled={busy}><span>{busy ? 'Signing in...' : 'Sign in to Creator'}</span>{!busy && <span aria-hidden="true">→</span>}</button>
+          <div className="cx-login-card-foot"><span className="cx-login-foot-dot" />Private access for the platform owner</div>
         </form>
+        <p className="cx-login-copyright">© TIMPRIEST EDU · Creator workspace</p>
+        </main>
       </div>
     )
   }
