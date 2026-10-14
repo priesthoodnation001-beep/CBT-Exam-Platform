@@ -317,23 +317,33 @@ export default function CreatorPage() {
     <div className="cx">
       <aside className="cx-side">
         <div className="cx-brand"><img src="/logo.svg" alt="" /><div><strong>TIMPRIEST EDU</strong><span>Creator console</span></div></div>
-        <nav className="cx-nav">
-          <button className={tab === 'Schools' ? 'active' : ''} onClick={() => setTab('Schools')}><Icon name="schools" />Schools</button>
-          <button className={tab === 'Payments' ? 'active' : ''} onClick={() => setTab('Payments')}><Icon name="payments" />Payments{pendingCount > 0 ? ` (${pendingCount})` : ''}</button>
-          <button className={tab === 'Support' ? 'active' : ''} onClick={() => setTab('Support')}><Icon name="chat" />Support{waiting > 0 && <span className="cx-badge">{waiting}</span>}</button>
-          <button className={tab === 'Activity' ? 'active' : ''} onClick={() => setTab('Activity')}><Icon name="activity" />Activity</button>
+        <span className="cx-nav-label">WORKSPACE</span>
+        <nav className="cx-nav" aria-label="Creator workspace">
+          <button className={tab === 'Schools' ? 'active' : ''} aria-current={tab === 'Schools' ? 'page' : undefined} onClick={() => setTab('Schools')}><Icon name="schools" /><span>Schools</span><small>{overview?.totals.schools ?? '—'}</small></button>
+          <button className={tab === 'Payments' ? 'active' : ''} aria-current={tab === 'Payments' ? 'page' : undefined} onClick={() => setTab('Payments')}><Icon name="payments" /><span>Payments</span>{pendingCount > 0 && <small className="cx-nav-count">{pendingCount}</small>}</button>
+          <button className={tab === 'Support' ? 'active' : ''} aria-current={tab === 'Support' ? 'page' : undefined} onClick={() => setTab('Support')}><Icon name="chat" /><span>Support</span>{waiting > 0 && <small className="cx-nav-count">{waiting}</small>}</button>
+          <button className={tab === 'Activity' ? 'active' : ''} aria-current={tab === 'Activity' ? 'page' : undefined} onClick={() => setTab('Activity')}><Icon name="activity" /><span>Activity</span></button>
         </nav>
-        <div className="cx-side-foot"><button onClick={signOut}><Icon name="logout" />Sign out</button></div>
+        <div className="cx-side-foot">
+          <div className="cx-owner-status"><span /><div><strong>Owner access</strong><small>Creator account</small></div></div>
+          <button onClick={signOut}><Icon name="logout" />Sign out</button>
+        </div>
       </aside>
 
       <main className="cx-main">
         <header className="cx-top">
-          <div><h1>{titles[tab][0]}</h1><p>{titles[tab][1]}</p></div>
-          <button className="cx-btn" onClick={() => void guard(loadAll)} disabled={busy}><Icon name="refresh" size={17} />{busy ? 'Working...' : 'Refresh'}</button>
+          <div className="cx-top-heading"><span>PLATFORM WORKSPACE</span><h1>{titles[tab][0]}</h1><p>{titles[tab][1]}</p></div>
+          <div className="cx-top-actions"><span className="cx-owner-pill"><span />Owner workspace</span><button className="cx-btn" onClick={() => void guard(loadAll)} disabled={busy}><Icon name="refresh" size={17} />{busy ? 'Working...' : 'Refresh'}</button></div>
         </header>
 
         {tab === 'Schools' && overview && (
           <>
+            <section className="cx-welcome">
+              <div><span className="cx-welcome-kicker">PLATFORM OVERVIEW</span><h2>All your schools,<br />in one place.</h2><p>Keep an eye on platform growth, credits, and school activity from here.</p></div>
+              <button className="cx-btn gold" onClick={openAdd}><Icon name="plus" size={17} />Add a school</button>
+              <span className="cx-welcome-orbit" aria-hidden="true" />
+            </section>
+
             <section className="cx-kpis">
               <div className="cx-kpi"><div className="cx-kpi-icon green"><Icon name="schools" size={24} /></div><div><strong>{overview.totals.schools}</strong><span>Schools</span></div></div>
               <div className="cx-kpi"><div className="cx-kpi-icon blue"><Icon name="users" size={24} /></div><div><strong>{overview.totals.students.toLocaleString()}</strong><span>Students</span></div></div>
@@ -341,13 +351,13 @@ export default function CreatorPage() {
               <div className="cx-kpi"><div className="cx-kpi-icon rose"><Icon name="cash" size={24} /></div><div><strong>{money(overview.totals.revenueNaira)}</strong><span>Paid so far</span></div></div>
             </section>
 
+            <div className="cx-directory-head"><div><h2>School directory</h2><p>Find a school to view its details and manage its account.</p></div><span className="cx-count">{shownSchools.length} <span>of {overview.schools.length} schools</span></span></div>
             <div className="cx-toolbar">
               <div className="cx-search"><Icon name="search" size={18} /><input className="cx-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by school name, link or email" /></div>
-              <span className="cx-count">{shownSchools.length} of {overview.schools.length} schools</span>
-              <button className="cx-btn gold cx-add" onClick={openAdd}><Icon name="plus" size={17} />Add school</button>
+              {query && <button className="cx-btn cx-clear-search" onClick={() => setQuery('')}>Clear search</button>}
             </div>
 
-            {shownSchools.length === 0 ? <div className="cx-empty">{overview.schools.length === 0 ? 'No schools have registered yet.' : 'No school matches your search.'}</div> : (
+            {shownSchools.length === 0 ? <div className="cx-empty"><span className="cx-empty-icon"><Icon name={overview.schools.length === 0 ? 'schools' : 'search'} size={23} /></span><strong>{overview.schools.length === 0 ? 'Your school directory is ready' : 'No schools match your search'}</strong><p>{overview.schools.length === 0 ? 'Add your first school to get started managing accounts, exams, and credits.' : 'Try a different school name, link, or email.'}</p>{overview.schools.length === 0 && <button className="cx-btn gold" onClick={openAdd}><Icon name="plus" size={17} />Add your first school</button>}</div> : (
               <div className="cx-grid">
                 {shownSchools.map((school) => (
                   <article className="cx-school" key={school.id}>
@@ -373,7 +383,7 @@ export default function CreatorPage() {
         {tab === 'Payments' && (
           <>
             <div className="cx-note">"Abandoned" means the payment was started and never finished. If a school says it paid, press <strong>Check with Paystack</strong>: if Paystack confirms it, the credits are added for you.{overview && !overview.paymentsReady ? ' Paystack is not set up on the server, so checking is unavailable.' : ''}</div>
-            <div className="cx-pills">{(['All', 'Paid', 'Pending', 'Abandoned'] as Filter[]).map((name) => <button key={name} className={filter === name ? 'active' : ''} onClick={() => setFilter(name)}>{name}</button>)}</div>
+            <div className="cx-pills" aria-label="Filter payments">{(['All', 'Paid', 'Pending', 'Abandoned'] as Filter[]).map((name) => <button key={name} className={filter === name ? 'active' : ''} aria-pressed={filter === name} onClick={() => setFilter(name)}>{name}</button>)}</div>
             {shownPayments.length === 0 ? <div className="cx-empty">No payments to show.</div> : (
               <div className="cx-list">
                 {shownPayments.map((payment) => {
@@ -397,7 +407,7 @@ export default function CreatorPage() {
 
         {tab === 'Support' && (
           <>
-            <div className="cx-pills">{(['All', 'Needs reply', 'Answered', 'Resolved'] as SupportFilter[]).map((name) => <button key={name} className={supportFilter === name ? 'active' : ''} onClick={() => setSupportFilter(name)}>{name}</button>)}</div>
+            <div className="cx-pills" aria-label="Filter support messages">{(['All', 'Needs reply', 'Answered', 'Resolved'] as SupportFilter[]).map((name) => <button key={name} className={supportFilter === name ? 'active' : ''} aria-pressed={supportFilter === name} onClick={() => setSupportFilter(name)}>{name}</button>)}</div>
             {shownTickets.length === 0 ? <div className="cx-empty">{tickets.length === 0 ? 'No messages yet. When a school admin writes to you, it will appear here.' : 'No messages in this group.'}</div> : (
               <div className="cx-list">
                 {shownTickets.map((ticket) => (
