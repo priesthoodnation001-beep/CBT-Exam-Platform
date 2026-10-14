@@ -53,7 +53,7 @@ export default function DashboardShell({ role, centre, userName, detail, items, 
           <div className="ds-sbar-in">
             <div className="ds-brand"><img src="/logo.svg" alt="" /><div><strong>TIMPRIEST EDU</strong><small>{centre}</small></div></div>
             <nav className="ds-pills" aria-label="Student pages">
-              {items.map((item) => <button key={item} className={tab === item ? 'active' : ''} onClick={() => onTab(item)}><Icon name={item} size={18} />{item}</button>)}
+              {items.map((item) => <button key={item} className={tab === item ? 'active' : ''} aria-current={tab === item ? 'page' : undefined} onClick={() => onTab(item)}><Icon name={item} size={18} />{item}</button>)}
             </nav>
             <div className="ds-sbar-right">
               <div className="ds-who"><span className="ds-avatar">{initials(userName)}</span><div><strong>{userName}</strong>{detail && <small>{detail}</small>}</div></div>
@@ -72,7 +72,7 @@ export default function DashboardShell({ role, centre, userName, detail, items, 
         <div className="ds-brand"><img src="/logo.svg" alt="" /><div><strong>TIMPRIEST EDU</strong><small>{SIDE_NOTE[role]}</small></div></div>
         <div className="ds-centre"><span className="ds-dot" /><div><strong>{centre}</strong><small>{role} portal</small></div></div>
         <nav className="ds-nav" aria-label={`${role} pages`}>
-          {items.map((item) => <button key={item} className={tab === item ? 'active' : ''} onClick={() => { onTab(item); onMenu(false) }}><Icon name={item} />{item}</button>)}
+          {items.map((item) => <button key={item} className={tab === item ? 'active' : ''} aria-current={tab === item ? 'page' : undefined} onClick={() => { onTab(item); onMenu(false) }}><Icon name={item} />{item}</button>)}
         </nav>
         <div className="ds-side-foot">
           <button className="ds-logout" onClick={onLogout}><Icon name="logout" />Log out</button>

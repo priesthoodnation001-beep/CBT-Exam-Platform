@@ -103,3 +103,501 @@
 .ds-student.exam-mode .ds-sbar-in { flex-wrap: nowrap; }
 .ds-student.exam-mode .ds-smain { max-width: 1120px; }
 .ds-student.exam-mode .ds-sbar { position: static; }
+
+/* Shared dashboard polish */
+.ds {
+  --surface: #fff;
+  --line: #e5eae4;
+  --role-accent: #34734b;
+  color: #22342a;
+}
+
+.ds-admin { --role-accent: #ad7916; }
+.ds-teacher { --role-accent: #477dd1; }
+
+.ds-admin, .ds-teacher {
+  background:
+    radial-gradient(ellipse at 90% 0, rgba(255, 255, 255, 0.9), transparent 38%),
+    var(--bg);
+}
+
+.ds-side {
+  padding: 26px 16px 20px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ds-brand img {
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.18);
+}
+
+.ds-centre {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ds-centre > div, .ds-user > div, .ds-who > div {
+  min-width: 0;
+}
+
+.ds-centre strong, .ds-user strong, .ds-who strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-nav {
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ds-nav button {
+  min-height: 46px;
+  border: 1px solid transparent;
+  font-weight: 500;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.ds-nav button:hover {
+  transform: translateX(2px);
+}
+
+.ds-nav button.active {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.ds-user {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ds-top {
+  min-height: 68px;
+  padding-inline: clamp(18px, 3vw, 42px);
+  border-bottom-color: var(--line);
+  box-shadow: 0 4px 18px rgba(30, 49, 37, 0.035);
+}
+
+.ds-crumb {
+  gap: 12px;
+}
+
+.ds-crumb strong {
+  font-size: 1.02rem;
+  letter-spacing: -0.02em;
+}
+
+.ds-crumb span {
+  padding-left: 12px;
+  border-left: 1px solid #dce3dc;
+}
+
+.ds-content {
+  padding: 0;
+}
+
+.ds-content > .content-wrap {
+  width: 100%;
+  max-width: 1360px;
+  padding: 34px clamp(20px, 3.5vw, 48px) 54px;
+}
+
+.ds-admin .intro, .ds-teacher .intro {
+  position: relative;
+  overflow: hidden;
+  min-height: 180px;
+  align-items: center;
+  margin-bottom: 28px;
+  padding: 30px clamp(22px, 3vw, 38px);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 94% 10%, color-mix(in srgb, var(--role-accent) 10%, transparent), transparent 34%),
+    var(--surface);
+  box-shadow: 0 12px 34px rgba(35, 58, 42, 0.055);
+}
+
+.ds-admin .intro h1, .ds-teacher .intro h1 {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: clamp(1.8rem, 3vw, 2.45rem);
+  font-weight: 700;
+  letter-spacing: -0.055em;
+}
+
+.ds-admin .intro .eyebrow, .ds-teacher .intro .eyebrow {
+  margin-bottom: 10px;
+  color: var(--role-accent);
+}
+
+.ds-admin .intro-copy, .ds-teacher .intro-copy {
+  max-width: 560px;
+  margin-top: 9px;
+  color: #758278;
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.ds .primary-button {
+  min-height: 44px;
+  padding: 11px 18px;
+  border-radius: 12px;
+  box-shadow: 0 7px 16px rgba(25, 53, 34, 0.12);
+  transition: filter 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.ds .primary-button:hover:not(:disabled) {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px rgba(25, 53, 34, 0.16);
+}
+
+.ds .primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  box-shadow: none;
+}
+
+.ds .stats-grid {
+  gap: 16px;
+  margin-bottom: 38px;
+}
+
+.ds .stat-card {
+  position: relative;
+  overflow: hidden;
+  min-height: 108px;
+  padding: 22px 24px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 7px 22px rgba(35, 63, 48, 0.04);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.ds .stat-card::before {
+  position: absolute;
+  inset: 18px auto 18px 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--role-accent);
+  content: '';
+}
+
+.ds .stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px rgba(35, 63, 48, 0.075);
+}
+
+.ds .stat-value {
+  color: var(--role-accent);
+  font: 700 1.9rem/1 Georgia, serif;
+}
+
+.ds .stat-label {
+  color: #334b3c;
+  font-size: 0.88rem;
+}
+
+.ds .stat-note {
+  color: #89968c;
+  font-size: 0.75rem;
+}
+
+.ds .section-heading {
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.ds .section-heading h2 {
+  color: #243d2e;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+}
+
+.ds .section-heading .eyebrow {
+  color: var(--role-accent);
+  font-size: 0.68rem;
+  letter-spacing: 0.13em;
+}
+
+.ds .text-button {
+  min-height: 38px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+}
+
+.ds .text-button:hover {
+  background: rgba(173, 121, 22, 0.08);
+}
+
+.ds-teacher .text-button:hover {
+  background: rgba(71, 125, 209, 0.09);
+}
+
+.ds .dashboard-grid {
+  gap: 18px;
+}
+
+.ds .panel, .ds .table-panel, .ds .form-panel, .ds .profile-panel, .ds .exam-card, .ds .question-card, .ds .approval-card {
+  border-color: var(--line);
+  border-radius: 16px;
+  box-shadow: 0 7px 22px rgba(35, 63, 48, 0.035);
+}
+
+.ds .panel, .ds .form-panel {
+  padding: 24px;
+}
+
+.ds .panel h3, .ds .form-panel h3, .ds .profile-panel h3, .ds .exam-card h3, .ds .question-card h3 {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.ds .panel-header p {
+  font-size: 0.78rem;
+}
+
+.ds .session {
+  gap: 15px;
+  padding-block: 17px 4px;
+}
+
+.ds .date-block, .ds .exam-card-date {
+  width: 48px;
+  height: 52px;
+  flex-basis: 48px;
+  border-radius: 12px;
+}
+
+.ds .date-block strong, .ds .exam-card-date strong {
+  font-size: 1.35rem;
+}
+
+.ds .session-title {
+  color: #2b4434;
+  font-size: 0.88rem;
+}
+
+.ds .session-info p, .ds .session-info small {
+  font-size: 0.76rem;
+}
+
+.ds .tag {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+}
+
+.ds .quick-actions {
+  gap: 9px;
+}
+
+.ds .quick-actions button {
+  min-height: 62px;
+  padding: 13px 15px;
+  border-color: var(--line);
+  border-radius: 12px;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.ds .quick-actions button:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--role-accent) 35%, var(--line));
+  background: #fff;
+}
+
+.ds .quick-actions button > span {
+  font-size: 0.82rem;
+}
+
+.ds .quick-actions small {
+  font-size: 0.72rem;
+}
+
+.ds .exam-card, .ds .question-card, .ds .approval-card {
+  padding: 18px 20px;
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.ds .exam-card:hover, .ds .question-card:hover, .ds .approval-card:hover {
+  transform: translateY(-1px);
+  border-color: #d4dfd4;
+  box-shadow: 0 10px 24px rgba(35, 63, 48, 0.07);
+}
+
+.ds .table-head {
+  background: #f7f9f6;
+  color: #77857b;
+}
+
+.ds .table-row {
+  min-height: 54px;
+}
+
+.ds .profile-panel {
+  max-width: 760px;
+  padding: 26px;
+}
+
+.ds-student .ds-sbar {
+  box-shadow: 0 8px 26px rgba(12, 42, 24, 0.2);
+}
+
+.ds-student .ds-sbar-in {
+  max-width: 1320px;
+  min-height: 72px;
+  padding-inline: clamp(18px, 4vw, 46px);
+}
+
+.ds-student .ds-pills button {
+  min-height: 42px;
+  padding-inline: 15px;
+  transition: background 150ms ease, transform 150ms ease;
+}
+
+.ds-student .ds-pills button:hover {
+  transform: translateY(-1px);
+}
+
+.ds-student .ds-who strong {
+  max-width: 180px;
+}
+
+.ds-student .ds-smain {
+  max-width: 1200px;
+  padding: 36px clamp(18px, 4vw, 46px) 90px;
+}
+
+.ds-student .intro {
+  min-height: 192px;
+  align-items: center;
+  padding: 32px clamp(22px, 4vw, 42px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 24px;
+}
+
+.ds-student .intro h1 {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: clamp(1.9rem, 4vw, 2.55rem);
+  font-weight: 700;
+  letter-spacing: -0.055em;
+}
+
+.ds-student .stats-grid {
+  margin-bottom: 36px;
+}
+
+.ds-student .panel, .ds-student .exam-card, .ds-student .score-card, .ds-student .result-empty {
+  border-color: #e0e8df;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(35, 63, 48, 0.055);
+}
+
+.ds-student .start-link {
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: rgba(31, 97, 55, 0.08);
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+
+.ds-student .start-link:hover {
+  background: rgba(31, 97, 55, 0.14);
+}
+
+.ds :where(button, input, select, textarea):focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--role-accent) 42%, white);
+  outline-offset: 2px;
+}
+
+@media (max-width: 900px) {
+  .ds-content > .content-wrap {
+    padding: 24px 20px 44px;
+  }
+
+  .ds .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ds .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ds-student .ds-smain {
+    padding-top: 24px;
+  }
+}
+
+@media (max-width: 560px) {
+  .ds-top {
+    min-height: 60px;
+  }
+
+  .ds-crumb {
+    gap: 8px;
+  }
+
+  .ds-crumb span {
+    font-size: 0.72rem;
+  }
+
+  .ds-content > .content-wrap {
+    padding: 18px 14px 38px;
+  }
+
+  .ds-admin .intro, .ds-teacher .intro {
+    display: block;
+    min-height: 0;
+    margin-bottom: 22px;
+    padding: 22px 20px;
+    border-radius: 18px;
+  }
+
+  .ds-admin .intro .primary-button, .ds-teacher .intro .primary-button {
+    margin-top: 18px;
+  }
+
+  .ds .stats-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-bottom: 30px;
+  }
+
+  .ds .stat-card {
+    min-height: 90px;
+    padding: 18px 20px;
+  }
+
+  .ds .panel, .ds .form-panel {
+    padding: 18px;
+  }
+
+  .ds .section-heading {
+    align-items: flex-start;
+  }
+
+  .ds-student .ds-sbar-in {
+    min-height: 0;
+  }
+
+  .ds-student .intro {
+    min-height: 0;
+    padding: 24px 21px;
+    border-radius: 19px;
+  }
+
+  .ds-student .ds-smain {
+    padding: 18px 14px 70px;
+  }
+
+  .ds .profile-panel {
+    padding: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds *, .ds *::before, .ds *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
