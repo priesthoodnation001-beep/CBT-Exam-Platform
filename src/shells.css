@@ -97,3 +97,9 @@
   .ds-admin, .ds-teacher { display: block !important; }
   .ds-content, .ds-smain { padding: 0 !important; max-width: none !important; }
 }
+
+/* while a student writes an exam: a slim top bar with no page buttons, so nothing distracts them */
+.ds-student.exam-mode .ds-pills { display: none; }
+.ds-student.exam-mode .ds-sbar-in { flex-wrap: nowrap; }
+.ds-student.exam-mode .ds-smain { max-width: 1120px; }
+.ds-student.exam-mode .ds-sbar { position: static; }

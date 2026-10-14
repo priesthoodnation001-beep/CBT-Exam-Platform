@@ -263,7 +263,11 @@ function AppInner() {
       setSubmitted(true); showNotice('Exam submitted successfully.')
       if (autoLogout && session?.role === 'Student') window.setTimeout(() => logout(), 4000)
       return true
-    } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not submit exam.'); return false }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : 'Could not submit exam.'
+      if (/already submitted/i.test(text)) { setSubmitted(true); if (autoLogout && session?.role === 'Student') window.setTimeout(() => logout(), 4000); return true }
+      showNotice(text); return false
+    }
   }
 
   // A student who logs out in the middle of an exam submits it. If sending fails they stay signed in, so no answers are lost.
@@ -321,11 +325,11 @@ function AppInner() {
 
   return (
     <>
-    <DashboardShell role={session.role} centre={centre} userName={session.name} detail={isStudent ? session.classSection : undefined} items={navItems} tab={tab} onTab={(item) => setTab(item as Tab)} onLogout={() => void logoutClicked()} menuOpen={menuOpen} onMenu={setMenuOpen}>
+    <DashboardShell examMode={Boolean(activeExam) && !submitted} role={session.role} centre={centre} userName={session.name} detail={isStudent ? session.classSection : undefined} items={navItems} tab={tab} onTab={(item) => setTab(item as Tab)} onLogout={() => void logoutClicked()} menuOpen={menuOpen} onMenu={setMenuOpen}>
       <section className={tab === 'Results' ? 'content-wrap results-print-scope' : 'content-wrap'}>
         {notice && <div className="toast">✓ {notice}</div>}
         {activeExam
-          ? <TimedExamRunner exam={activeExam} questions={examQuestions} selectedAnswers={selectedAnswers} setSelectedAnswers={setSelectedAnswers} submitted={submitted} submit={confirmSubmit} exit={() => { setActiveExam(null); setSubmitted(false); setSelectedAnswers({}) }} />
+          ? <TimedExamRunner exam={activeExam} questions={examQuestions} selectedAnswers={selectedAnswers} setSelectedAnswers={setSelectedAnswers} submitted={submitted} submit={confirmSubmit} startedAt={examStartedAt.current} onTimeUp={() => submitExam(selectedAnswers, true)} exit={() => { setActiveExam(null); setSubmitted(false); setSelectedAnswers({}) }} />
           : <>
             <div className="intro">
               <div>

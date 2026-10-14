@@ -1,0 +1,79 @@
+/* Exam-writing screen. Everything is prefixed ex- so it never clashes with the rest of the app. */
+.ex { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; color: #172a1e; display: grid; gap: 16px; }
+.ex *, .ex *::before, .ex *::after { box-sizing: border-box; }
+.ex button { font-family: inherit; }
+
+/* the bar with start time, end time and the clock */
+.ex-bar { position: sticky; top: 8px; z-index: 25; display: grid; grid-template-columns: minmax(0, 1.2fr) auto auto; align-items: center; gap: 14px 24px; padding: 14px 20px 18px; border-radius: 20px; background: linear-gradient(135deg, #1f6137, #123a22); color: #fff; box-shadow: 0 10px 28px rgba(12, 42, 24, 0.28); overflow: hidden; transition: background 0.4s; }
+.ex-bar.ex-warn { background: linear-gradient(135deg, #a8741a, #6b4a0c); }
+.ex-bar.ex-danger { background: linear-gradient(135deg, #b3261e, #7a1712); }
+.ex-title strong { display: block; font-size: 1.1rem; line-height: 1.25; overflow-wrap: anywhere; }
+.ex-title span { font-size: 0.85rem; opacity: 0.8; }
+.ex-times { display: flex; gap: 22px; }
+.ex-times small, .ex-clock small { display: block; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.75; }
+.ex-times b { font-size: 1.05rem; white-space: nowrap; }
+.ex-clock { text-align: right; padding-left: 20px; border-left: 1px solid rgba(255, 255, 255, 0.28); }
+.ex-clock strong { font-size: 2.1rem; font-variant-numeric: tabular-nums; line-height: 1.1; color: #f4d977; }
+.ex-danger .ex-clock strong { animation: ex-pulse 1s ease-in-out infinite; color: #fff; }
+.ex-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: rgba(255, 255, 255, 0.18); }
+.ex-progress span { display: block; height: 100%; background: #f4d977; transition: width 1s linear; }
+@keyframes ex-pulse { 50% { opacity: 0.55; } }
+.ex-alert { margin: 0; padding: 11px 16px; border-radius: 12px; font-weight: 600; font-size: 0.93rem; }
+.ex-alert.warn { background: #fcf1d0; color: #6b4d0c; }
+.ex-alert.danger { background: #fdecea; color: #a1241c; }
+
+.ex-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
+.ex-card { background: #fff; border-radius: 22px; padding: 24px; box-shadow: 0 1px 2px rgba(16, 40, 26, 0.06), 0 10px 30px rgba(16, 40, 26, 0.07); }
+.ex-count { margin: 0 0 8px; color: #667a6d; font-size: 0.85rem; font-weight: 600; }
+.ex-question { margin: 0 0 18px; font-size: 1.3rem; line-height: 1.45; font-weight: 700; overflow-wrap: anywhere; }
+.ex-options { display: grid; gap: 10px; }
+.ex-option { display: flex; align-items: center; gap: 14px; text-align: left; width: 100%; padding: 14px 16px; border: 2px solid #dfe6dc; border-radius: 14px; background: #fff; font-size: 1.05rem; line-height: 1.4; color: #172a1e; cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+.ex-option:hover:not(:disabled) { border-color: #9bb59f; background: #f7faf7; }
+.ex-option:disabled { cursor: not-allowed; opacity: 0.8; }
+.ex-letter { width: 34px; height: 34px; border-radius: 50%; flex: none; display: grid; place-items: center; background: #eef2ec; font-weight: 800; color: #4d6054; }
+.ex-option.chosen { border-color: #1f6137; background: #eaf4ec; }
+.ex-option.chosen .ex-letter { background: #1f6137; color: #fff; }
+.ex-nav { display: flex; justify-content: space-between; gap: 10px; margin-top: 22px; }
+
+.ex-btn { padding: 12px 20px; border-radius: 12px; border: 1px solid #cdd8cf; background: #fff; color: #172a1e; font-weight: 700; font-size: 0.98rem; cursor: pointer; }
+.ex-btn:hover:not(:disabled) { box-shadow: 0 3px 10px rgba(16, 40, 26, 0.14); }
+.ex-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.ex-btn.primary { background: #1f6137; border-color: #1f6137; color: #fff; }
+.ex-btn.gold { background: #c99a2e; border-color: #c99a2e; color: #1d1604; }
+.ex-btn.wide { width: 100%; margin-top: 12px; }
+
+.ex-side { background: #fff; border-radius: 22px; padding: 18px; box-shadow: 0 1px 2px rgba(16, 40, 26, 0.06), 0 10px 30px rgba(16, 40, 26, 0.07); position: sticky; top: 118px; }
+.ex-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 7px; }
+.ex-grid button { aspect-ratio: 1; border: 1px solid #cdd8cf; border-radius: 10px; background: #fff; font-weight: 700; font-size: 0.88rem; cursor: pointer; color: #4d6054; }
+.ex-grid button.done { background: #dff3e5; border-color: #9fd2ae; color: #1d6b38; }
+.ex-grid button.now { outline: 3px solid #c99a2e; outline-offset: 1px; }
+.ex-hint { margin: 12px 0 0; color: #667a6d; font-size: 0.8rem; line-height: 1.45; }
+
+/* time is up */
+.ex-over { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 20px; background: rgba(8, 22, 14, 0.72); }
+.ex-over-card { width: min(440px, 100%); background: #fff; border-radius: 24px; padding: 32px 28px; text-align: center; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4); }
+.ex-over-card h2 { margin: 14px 0 8px; font-size: 1.5rem; }
+.ex-over-card p { margin: 0; color: #4d6054; line-height: 1.55; }
+.ex-spin { width: 46px; height: 46px; margin: 0 auto; border-radius: 50%; border: 5px solid #e4efe7; border-top-color: #1f6137; animation: ex-turn 0.9s linear infinite; }
+@keyframes ex-turn { to { transform: rotate(360deg); } }
+
+/* submitted */
+.ex-done { min-height: 60vh; place-items: center; }
+.ex-done-card { width: min(480px, 100%); background: #fff; border-radius: 26px; padding: 40px 30px; text-align: center; box-shadow: 0 1px 2px rgba(16, 40, 26, 0.06), 0 16px 44px rgba(16, 40, 26, 0.1); }
+.ex-done-icon { width: 76px; height: 76px; margin: 0 auto 16px; border-radius: 50%; display: grid; place-items: center; background: #dff3e5; color: #1d6b38; font-size: 2.4rem; font-weight: 800; }
+.ex-done-card h2 { margin: 0 0 8px; font-size: 1.6rem; }
+.ex-done-card p { margin: 0 0 8px; color: #4d6054; line-height: 1.5; }
+.ex-done-note { font-size: 0.88rem; color: #8a988f !important; margin-bottom: 18px !important; }
+
+@media (max-width: 900px) {
+  .ex-bar { top: 6px; grid-template-columns: 1fr auto; padding: 12px 14px 16px; border-radius: 16px; }
+  .ex-times { grid-column: 1 / -1; order: 3; justify-content: space-between; gap: 10px; }
+  .ex-clock { border-left: 0; padding-left: 0; }
+  .ex-clock strong { font-size: 1.7rem; }
+  .ex-layout { grid-template-columns: 1fr; }
+  .ex-side { position: static; }
+  .ex-card { padding: 18px; }
+  .ex-question { font-size: 1.15rem; }
+  .ex-grid { grid-template-columns: repeat(8, 1fr); }
+}
+@media print { .ex-over { display: none; } }

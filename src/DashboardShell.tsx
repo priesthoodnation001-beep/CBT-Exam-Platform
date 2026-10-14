@@ -14,6 +14,7 @@ type Props = {
   onLogout: () => void
   menuOpen: boolean
   onMenu: (open: boolean) => void
+  examMode?: boolean
   children: ReactNode
 }
 
@@ -44,10 +45,10 @@ const SIDE_NOTE: Record<ShellRole, string> = {
 }
 
 // One shell per role. The pages inside it (children) are the same working screens as before.
-export default function DashboardShell({ role, centre, userName, detail, items, tab, onTab, onLogout, menuOpen, onMenu, children }: Props) {
+export default function DashboardShell({ role, centre, userName, detail, items, tab, onTab, onLogout, menuOpen, onMenu, examMode = false, children }: Props) {
   if (role === 'Student') {
     return (
-      <div className="ds ds-student">
+      <div className={`ds ds-student ${examMode ? 'exam-mode' : ''}`}>
         <header className="ds-sbar">
           <div className="ds-sbar-in">
             <div className="ds-brand"><img src="/logo.svg" alt="" /><div><strong>TIMPRIEST EDU</strong><small>{centre}</small></div></div>
