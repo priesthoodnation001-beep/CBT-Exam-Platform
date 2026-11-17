@@ -14,7 +14,7 @@ type ExamFees = Record<Exam, number>
 type SubjectYear = { year: number | null; questions: number }
 type Subject = { subject: string; questions: number; years: SubjectYear[] }
 type CatalogItem = { exam: Exam; subjects: Subject[] }
-type Question = { id: string; text: string; options: string[]; explanation: string | null; year: number | null }
+type Question = { id: string; text: string; options: string[]; explanation: string | null; year: number | null; image?: string | null }
 type ReviewQuestion = Question & { answer: number; selected: number | null }
 type Attempt = { id: string; exam: Exam; subject: string; score: number; total: number; createdAt: string }
 type Result = Attempt & { review: ReviewQuestion[] }
@@ -51,6 +51,12 @@ function formatTime(seconds: number) {
 function returnedPaymentReference() {
   const query = new URLSearchParams(window.location.search)
   return query.get('reference') || query.get('trxref') || sessionStorage.getItem('timpriest-prep-payment-reference')
+}
+
+// The diagram (picture) for a question, when the question has one.
+function QuestionDiagram({ image }: { image?: string | null }) {
+  if (!image) return null
+  return <img src={`${API_BASE}/api/prep/diagrams/${image}`} alt="Diagram for this question" style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: '12px 0', background: '#fff', borderRadius: 8, padding: 6, boxSizing: 'border-box' }} />
 }
 
 export default function PrepPlatform() {
@@ -606,6 +612,7 @@ export default function PrepPlatform() {
             <p className="ex-count">Question {current + 1} of {questions.length}</p>
             {question && <>
               <div className="ex-question" role="heading" aria-level={2}><QuestionContent content={question.text} /></div>
+              <QuestionDiagram image={question.image} />
               {question.year && <span className="prep-year">Past question · {question.year}</span>}
               <div className="ex-options" role="radiogroup" aria-label="Choose one answer">
                 {question.options.map((option, index) => (
@@ -700,6 +707,7 @@ export default function PrepPlatform() {
               <article key={item.id} className={item.selected === item.answer ? 'correct' : 'incorrect'}>
                 <div className="prep-review-heading"><strong>Question {index + 1}</strong><span>{item.selected === item.answer ? 'Correct' : 'Review this answer'}</span></div>
                 <div className="prep-review-question"><QuestionContent content={item.text} /></div>
+                <QuestionDiagram image={item.image} />
                 <p><b>Your answer:</b> {item.selected === null ? 'Not answered' : `${String.fromCharCode(65 + item.selected)}. ${item.options[item.selected]}`}</p>
                 <p><b>Correct answer:</b> {String.fromCharCode(65 + item.answer)}. {item.options[item.answer]}</p>
                 {item.explanation && <p className="prep-explanation"><b>Explanation:</b> {item.explanation}</p>}

@@ -2055,7 +2055,7 @@ app.post('/api/prep/practice', prepAuth, requirePrepExamPayment, (request, respo
     [id, request.prepUser.id, exam, subject, JSON.stringify(questionIds), startedAt, startedAt + durationMinutes * 60_000]
   )
   const questions = rows(
-    `SELECT id, question AS text, options, explanation, year FROM prep_questions WHERE id IN (${questionIds.map(() => '?').join(',')})`,
+    `SELECT id, question AS text, options, explanation, year, image FROM prep_questions WHERE id IN (${questionIds.map(() => '?').join(',')})`,
     questionIds
   ).map((item) => ({ ...item, options: JSON.parse(item.options) }))
   const byId = new Map(questions.map((item) => [item.id, item]))
@@ -2073,7 +2073,7 @@ app.post('/api/prep/practice/:id/submit', prepAuth, requirePrepExamPaymentForSub
     return response.status(400).json({ error: 'One or more selected answers are invalid.' })
   }
   const questions = rows(
-    `SELECT id, question AS text, options, answer, explanation, year FROM prep_questions WHERE id IN (${ids.map(() => '?').join(',')})`,
+    `SELECT id, question AS text, options, answer, explanation, year, image FROM prep_questions WHERE id IN (${ids.map(() => '?').join(',')})`,
     ids
   )
   if (questions.length !== ids.length) return response.status(409).json({ error: 'Some questions in this practice session are no longer available.' })
@@ -2097,7 +2097,8 @@ app.post('/api/prep/practice/:id/submit', prepAuth, requirePrepExamPaymentForSub
     answer: Number(question.answer),
     selected: Number.isInteger(answers[question.id]) ? answers[question.id] : null,
     explanation: question.explanation,
-    year: question.year
+    year: question.year,
+    image: question.image || null
   }))
   response.json({ id: attemptId, exam: practice.exam, subject: practice.subject, score, total: questions.length, createdAt: completedAt, review })
 })
@@ -2460,7 +2461,7 @@ app.get('/api/creator/prep/questions/list', creatorAuth, (request, response) => 
   const filter = prepYearFilter(request.query.year)
   if (!scope || !filter) return response.status(400).json({ error: 'Choose a valid exam, subject and year.' })
   const questions = rows(
-    `SELECT id, question, options, answer, explanation, year FROM prep_questions WHERE active = 1 AND exam = ? AND subject = ? AND ${filter.sql} ORDER BY created_at, rowid`,
+    `SELECT id, question, options, answer, explanation, year, image FROM prep_questions WHERE active = 1 AND exam = ? AND subject = ? AND ${filter.sql} ORDER BY created_at, rowid`,
     [scope.exam, scope.subject, ...filter.params]
   ).map((item) => ({ ...item, options: parsePrepOptions(item.options) }))
   response.json({ questions })
@@ -2517,6 +2518,64 @@ app.delete('/api/creator/prep/questions/:id', creatorAuth, (request, response) =
   persist()
   creatorLog('Deleted prep question', `${current.exam} · ${current.subject}`)
   response.json({ deleted: true })
+})
+
+// ---------- Diagrams (pictures) on prep questions ----------
+// Pictures are saved as files in the data folder (the same folder as the database), so they survive redeploys.
+const DIAGRAM_DIR = path.resolve(DATA_DIR, 'prep-diagrams')
+const DIAGRAM_FILE = /^[0-9a-f-]{36}\.(png|jpg|webp|gif)$/
+
+function diagramExtension(buffer) {
+  if (buffer.length < 12) return null
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'png'
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'jpg'
+  if (buffer.toString('ascii', 0, 4) === 'GIF8') return 'gif'
+  if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'webp'
+  return null
+}
+
+function removeDiagramFile(name) {
+  if (!name || !DIAGRAM_FILE.test(name)) return
+  if (rows('SELECT id FROM prep_questions WHERE image = ?', [name]).length) return // another question still uses it
+  try { fs.unlinkSync(path.join(DIAGRAM_DIR, name)) } catch { /* already gone */ }
+}
+
+// Students' browsers load the picture with a plain image tag, so this route has no login; the file names are long random codes.
+app.get('/api/prep/diagrams/:file', (request, response) => {
+  const file = String(request.params.file || '')
+  if (!DIAGRAM_FILE.test(file)) return response.status(404).end()
+  const full = path.join(DIAGRAM_DIR, file)
+  if (!fs.existsSync(full)) return response.status(404).end()
+  response.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+  response.setHeader('X-Content-Type-Options', 'nosniff')
+  response.sendFile(full)
+})
+
+app.put('/api/creator/prep/questions/:id/diagram', creatorAuth, express.raw({ type: 'image/*', limit: '4mb' }), (request, response) => {
+  const current = rows('SELECT id, exam, subject, image FROM prep_questions WHERE id = ? AND active = 1', [request.params.id]).at(0)
+  if (!current) return response.status(404).json({ error: 'Question not found.' })
+  const buffer = request.body
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return response.status(400).json({ error: 'Choose a picture file (PNG, JPG, WEBP or GIF).' })
+  const extension = diagramExtension(buffer)
+  if (!extension) return response.status(400).json({ error: 'That file is not a PNG, JPG, WEBP or GIF picture.' })
+  fs.mkdirSync(DIAGRAM_DIR, { recursive: true })
+  const name = `${crypto.randomUUID()}.${extension}`
+  fs.writeFileSync(path.join(DIAGRAM_DIR, name), buffer)
+  db.run('UPDATE prep_questions SET image = ? WHERE id = ?', [name, current.id])
+  persist()
+  removeDiagramFile(current.image) // the old picture, if this question had one
+  creatorLog('Saved prep diagram', `${current.exam} · ${current.subject}`)
+  response.json({ image: name })
+})
+
+app.delete('/api/creator/prep/questions/:id/diagram', creatorAuth, (request, response) => {
+  const current = rows('SELECT id, exam, subject, image FROM prep_questions WHERE id = ? AND active = 1', [request.params.id]).at(0)
+  if (!current) return response.status(404).json({ error: 'Question not found.' })
+  db.run('UPDATE prep_questions SET image = NULL WHERE id = ?', [current.id])
+  persist()
+  removeDiagramFile(current.image)
+  creatorLog('Removed prep diagram', `${current.exam} · ${current.subject}`)
+  response.json({ removed: true })
 })
 
 app.post('/api/creator/prep/questions/import', creatorAuth, (request, response) => {
@@ -2948,6 +3007,7 @@ async function start() {
   db.run('CREATE TABLE IF NOT EXISTS prep_questions (id TEXT PRIMARY KEY, exam TEXT NOT NULL, subject TEXT NOT NULL, question TEXT NOT NULL, options TEXT NOT NULL, answer INTEGER NOT NULL, explanation TEXT, year INTEGER, created_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)')
   const prepQuestionColumns = rows('PRAGMA table_info(prep_questions)').map((column) => column.name)
   if (!prepQuestionColumns.includes('active')) db.run('ALTER TABLE prep_questions ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
+  if (!prepQuestionColumns.includes('image')) db.run('ALTER TABLE prep_questions ADD COLUMN image TEXT')
   db.run('CREATE INDEX IF NOT EXISTS prep_questions_exam_subject ON prep_questions (exam, subject)')
   db.run('CREATE TABLE IF NOT EXISTS prep_practice_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, question_ids TEXT NOT NULL, started_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, completed_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS prep_attempts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, score INTEGER NOT NULL, total INTEGER NOT NULL, created_at TEXT NOT NULL)')

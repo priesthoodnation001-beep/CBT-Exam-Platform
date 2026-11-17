@@ -19,3 +19,5 @@
 .pqm-form { display: grid; gap: 8px; }
 .pqm-form label { display: grid; gap: 4px; font-size: 0.9rem; }
 .pqm-form input, .pqm-form textarea, .pqm-form select { font: inherit; padding: 6px 8px; width: 100%; box-sizing: border-box; }
+.pqm-file { cursor: pointer; display: inline-flex; align-items: center; }
+.pqm-diagram { display: block; max-width: min(100%, 420px); height: auto; margin: 8px 0; background: #fff; border: 1px solid rgba(128, 128, 128, 0.3); border-radius: 8px; padding: 6px; box-sizing: border-box; }

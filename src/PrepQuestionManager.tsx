@@ -4,7 +4,7 @@ import './prep-manager.css'
 
 type Props = { token: string; exam: string; subject: string; onClose: () => void; onChanged: () => void; onMessage: (message: string) => void }
 type YearCount = { year: number | null; questions: number }
-type ManagedQuestion = { id: string; question: string; options: string[]; answer: number; explanation: string | null; year: number | null }
+type ManagedQuestion = { id: string; question: string; options: string[]; answer: number; explanation: string | null; year: number | null; image: string | null }
 type Draft = { question: string; options: string[]; answer: number; explanation: string; year: string }
 
 async function request<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
@@ -19,6 +19,28 @@ async function request<T>(path: string, token: string, options: RequestInit = {}
 
 const yearKey = (year: number | null) => (year === null ? 'none' : String(year))
 const yearLabel = (year: number | null) => (year === null ? 'No year' : String(year))
+const diagramUrl = (name: string) => `${API_BASE}/api/prep/diagrams/${name}`
+
+// Shrinks big photos before upload (long side 1400 px) so pictures stay small and quick for students.
+async function prepareImage(file: File): Promise<Blob> {
+  if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type)) throw new Error('Choose a PNG, JPG, WEBP or GIF picture.')
+  const bitmap = await createImageBitmap(file)
+  const scale = Math.min(1, 1400 / Math.max(bitmap.width, bitmap.height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('This browser cannot prepare the picture.')
+  const keepsPng = file.type !== 'image/jpeg'
+  if (!keepsPng) { context.fillStyle = '#ffffff'; context.fillRect(0, 0, canvas.width, canvas.height) }
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  bitmap.close()
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, keepsPng ? 'image/png' : 'image/jpeg', 0.88))
+  if (!blob) throw new Error('Could not prepare the picture.')
+  if (blob.size > 4_000_000) throw new Error('This picture is too large. Please use a smaller one.')
+  return blob
+}
+
 const plural = (count: number) => `${count.toLocaleString()} question${count === 1 ? '' : 's'}`
 
 // Opens one exam subject (for example JAMB Economics) and shows its questions split by year.
@@ -30,6 +52,7 @@ export default function PrepQuestionManager({ token, exam, subject, onClose, onC
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [busy, setBusy] = useState(false)
+  const [uploadingId, setUploadingId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const scope = `exam=${encodeURIComponent(exam)}&subject=${encodeURIComponent(subject)}`
 
@@ -103,6 +126,43 @@ export default function PrepQuestionManager({ token, exam, subject, onClose, onC
       setError(failure instanceof Error ? failure.message : 'Could not save the question.')
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function uploadDiagram(item: ManagedQuestion, file?: File) {
+    if (!file) return
+    setUploadingId(item.id)
+    setError('')
+    try {
+      const blob = await prepareImage(file)
+      const response = await fetch(`${API_BASE}/api/creator/prep/questions/${item.id}/diagram`, {
+        method: 'PUT',
+        headers: { 'Content-Type': blob.type, Authorization: `Bearer ${token}` },
+        body: blob,
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.error || 'Could not save the picture.')
+      setQuestions((current) => current.map((q) => (q.id === item.id ? { ...q, image: String(body.image) } : q)))
+      onMessage('Diagram saved.')
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Could not save the picture.')
+    } finally {
+      setUploadingId(null)
+    }
+  }
+
+  async function removeDiagram(item: ManagedQuestion) {
+    if (!window.confirm('Remove the diagram from this question?')) return
+    setUploadingId(item.id)
+    setError('')
+    try {
+      await request<unknown>(`/prep/questions/${item.id}/diagram`, token, { method: 'DELETE' })
+      setQuestions((current) => current.map((q) => (q.id === item.id ? { ...q, image: null } : q)))
+      onMessage('Diagram removed.')
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Could not remove the picture.')
+    } finally {
+      setUploadingId(null)
     }
   }
 
@@ -182,12 +242,17 @@ export default function PrepQuestionManager({ token, exam, subject, onClose, onC
                     ) : (
                       <>
                         <p className="pqm-text"><b>{index + 1}.</b> {q.question}</p>
+                        {q.image && <img className="pqm-diagram" src={diagramUrl(q.image)} alt="Diagram for this question" loading="lazy" />}
                         <ol className="pqm-options" type="A">
                           {q.options.map((option, optionIndex) => <li key={optionIndex} className={optionIndex === q.answer ? 'pqm-correct' : ''}>{option}</li>)}
                         </ol>
                         {q.explanation && <p className="pqm-explain">{q.explanation}</p>}
                         <div className="pqm-actions">
-                          <button className="cx-btn" type="button" disabled={busy} onClick={() => startEdit(q)}>Edit</button>
+                          <button className="cx-btn" type="button" disabled={busy || uploadingId !== null} onClick={() => startEdit(q)}>Edit</button>
+                          <label className="cx-btn pqm-file">{uploadingId === q.id ? 'Saving...' : q.image ? 'Change diagram' : 'Add diagram'}
+                            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden disabled={busy || uploadingId !== null} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; void uploadDiagram(q, file) }} />
+                          </label>
+                          {q.image && <button className="cx-btn" type="button" disabled={busy || uploadingId !== null} onClick={() => void removeDiagram(q)}>Remove diagram</button>}
                           <button className="cx-btn pqi-delete-button" type="button" disabled={busy} onClick={() => void deleteQuestion(q)}>Delete</button>
                         </div>
                       </>
