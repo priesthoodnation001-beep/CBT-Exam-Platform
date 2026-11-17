@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE } from './apiBase'
 import { parseDocx } from './questionImport'
+import PrepQuestionManager from './PrepQuestionManager'
 import './prep-import.css'
 
 type Props = { token: string; onMessage: (message: string) => void }
@@ -213,6 +214,7 @@ export default function PrepQuestionImport({ token, onMessage }: Props) {
   const [error, setError] = useState('')
   const [deletingSubject, setDeletingSubject] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState('')
+  const [managing, setManaging] = useState<BankCount | null>(null)
 
   async function loadCounts() {
     const result = await request<{ questions: BankCount[] }>('/prep/questions', token)
@@ -464,16 +466,17 @@ export default function PrepQuestionImport({ token, onMessage }: Props) {
         {error && <p className="pqi-error" role="alert">{error}</p>}
       </section>
       <section className="pqi-card">
-        <div className="pqi-intro"><h2>Current question bank</h2><p>Questions currently available to prep-platform students. Delete an entire exam subject bank when it is no longer needed.</p></div>
+        <div className="pqi-intro"><h2>Current question bank</h2><p>Questions currently available to prep-platform students. Open a subject with Manage by year to edit or delete single questions or a whole year, or delete an entire subject bank when it is no longer needed.</p></div>
         {counts.length === 0
           ? <p className="pqi-empty">No questions have been imported yet.</p>
           : <div className="pqi-table-wrap"><table className="pqi-table"><thead><tr><th>Exam</th><th>Subject</th><th>Questions</th><th>Action</th></tr></thead><tbody>
             {counts.map((item) => {
               const key = `${item.exam}\u0000${item.subject}`
-              return <tr key={key}><td>{item.exam}</td><td>{item.subject}</td><td>{item.questions.toLocaleString()}</td><td><button className="cx-btn pqi-delete-button" type="button" disabled={deletingSubject === key} onClick={() => void deleteSubject(item)}>{deletingSubject === key ? 'Deleting subject...' : 'Delete subject'}</button></td></tr>
+              return <tr key={key}><td>{item.exam}</td><td>{item.subject}</td><td>{item.questions.toLocaleString()}</td><td><button className="cx-btn" type="button" onClick={() => setManaging(item)}>Manage by year</button> <button className="cx-btn pqi-delete-button" type="button" disabled={deletingSubject === key} onClick={() => void deleteSubject(item)}>{deletingSubject === key ? 'Deleting subject...' : 'Delete subject'}</button></td></tr>
             })}
           </tbody></table></div>}
         {deleteError && <p className="pqi-error" role="alert">{deleteError}</p>}
+        {managing && <PrepQuestionManager key={`${managing.exam}-${managing.subject}`} token={token} exam={managing.exam} subject={managing.subject} onMessage={onMessage} onChanged={() => { void loadCounts().catch(() => undefined) }} onClose={() => setManaging(null)} />}
       </section>
     </div>
   )

@@ -2424,6 +2424,101 @@ app.delete('/api/creator/prep/questions/subject', creatorAuth, (request, respons
   response.json({ deleted: true, exam, subject, questions: total })
 })
 
+function prepScope(source) {
+  const exam = String(source?.exam || '').trim().toUpperCase()
+  const subject = String(source?.subject || '').trim()
+  if (!['JAMB', 'WAEC', 'NECO'].includes(exam) || !subject || subject.length > 100) return null
+  return { exam, subject }
+}
+
+// A year of "none" (or null) means the questions that have no year.
+function prepYearFilter(value) {
+  if (value === 'none' || value === null) return { sql: 'year IS NULL', params: [] }
+  const year = Number(value)
+  if (!Number.isInteger(year) || year < 1950 || year > new Date().getFullYear() + 1) return null
+  return { sql: 'year = ?', params: [year] }
+}
+
+function parsePrepOptions(value) {
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.map((option) => String(option)) : []
+  } catch {
+    return []
+  }
+}
+
+app.get('/api/creator/prep/questions/years', creatorAuth, (request, response) => {
+  const scope = prepScope(request.query)
+  if (!scope) return response.status(400).json({ error: 'Choose a valid exam and subject.' })
+  const years = rows('SELECT year, COUNT(*) AS questions FROM prep_questions WHERE active = 1 AND exam = ? AND subject = ? GROUP BY year ORDER BY year DESC', [scope.exam, scope.subject])
+  response.json({ years })
+})
+
+app.get('/api/creator/prep/questions/list', creatorAuth, (request, response) => {
+  const scope = prepScope(request.query)
+  const filter = prepYearFilter(request.query.year)
+  if (!scope || !filter) return response.status(400).json({ error: 'Choose a valid exam, subject and year.' })
+  const questions = rows(
+    `SELECT id, question, options, answer, explanation, year FROM prep_questions WHERE active = 1 AND exam = ? AND subject = ? AND ${filter.sql} ORDER BY created_at, rowid`,
+    [scope.exam, scope.subject, ...filter.params]
+  ).map((item) => ({ ...item, options: parsePrepOptions(item.options) }))
+  response.json({ questions })
+})
+
+app.delete('/api/creator/prep/questions/year', creatorAuth, (request, response) => {
+  const scope = prepScope(request.body)
+  const filter = prepYearFilter(request.body?.year === undefined ? 'invalid' : request.body.year)
+  if (!scope || !filter) return response.status(400).json({ error: 'Choose a valid exam, subject and year.' })
+  const existing = rows(`SELECT COUNT(*) AS total FROM prep_questions WHERE active = 1 AND exam = ? AND subject = ? AND ${filter.sql}`, [scope.exam, scope.subject, ...filter.params]).at(0)
+  const total = Number(existing?.total || 0)
+  if (!total) return response.status(404).json({ error: 'This year has no active questions to delete.' })
+  db.run('BEGIN')
+  try {
+    db.run(`UPDATE prep_questions SET active = 0 WHERE active = 1 AND exam = ? AND subject = ? AND ${filter.sql}`, [scope.exam, scope.subject, ...filter.params])
+    db.run('COMMIT')
+  } catch (error) {
+    db.run('ROLLBACK')
+    throw error
+  }
+  persist()
+  const label = request.body.year === null ? 'no year' : String(request.body.year)
+  creatorLog('Deleted prep year', `${scope.exam} · ${scope.subject} · ${label} · ${total} questions`)
+  response.json({ deleted: true, questions: total })
+})
+
+app.patch('/api/creator/prep/questions/:id', creatorAuth, (request, response) => {
+  const current = rows('SELECT id, exam, subject FROM prep_questions WHERE id = ? AND active = 1', [request.params.id]).at(0)
+  if (!current) return response.status(404).json({ error: 'Question not found.' })
+  const question = String(request.body?.question || '').trim()
+  const options = request.body?.options
+  const answer = Number(request.body?.answer)
+  const explanation = String(request.body?.explanation || '').trim()
+  const year = request.body?.year === '' || request.body?.year == null ? null : Number(request.body.year)
+  if (!question || question.length > 5000) return response.status(400).json({ error: 'The question is required and must be 5,000 characters or fewer.' })
+  if (!Array.isArray(options) || options.length !== 4 || options.some((option) => typeof option !== 'string' || !option.trim() || option.length > 1000)) {
+    return response.status(400).json({ error: 'Provide four non-empty options, each no longer than 1,000 characters.' })
+  }
+  if (!Number.isInteger(answer) || answer < 0 || answer > 3) return response.status(400).json({ error: 'Choose the correct answer, A to D.' })
+  if (explanation.length > 5000) return response.status(400).json({ error: 'The explanation must be 5,000 characters or fewer.' })
+  if (year !== null && (!Number.isInteger(year) || year < 1950 || year > new Date().getFullYear() + 1)) return response.status(400).json({ error: 'The year is invalid.' })
+  const duplicate = rows('SELECT id FROM prep_questions WHERE active = 1 AND exam = ? AND subject = ? AND id <> ? AND question = ? COLLATE NOCASE', [current.exam, current.subject, current.id, question]).length > 0
+  if (duplicate) return response.status(409).json({ error: 'Another question in this subject already has the same text.' })
+  db.run('UPDATE prep_questions SET question = ?, options = ?, answer = ?, explanation = ?, year = ? WHERE id = ?', [question, JSON.stringify(options.map((option) => option.trim())), answer, explanation || null, year, current.id])
+  persist()
+  creatorLog('Edited prep question', `${current.exam} · ${current.subject}`)
+  response.json({ saved: true })
+})
+
+app.delete('/api/creator/prep/questions/:id', creatorAuth, (request, response) => {
+  const current = rows('SELECT id, exam, subject FROM prep_questions WHERE id = ? AND active = 1', [request.params.id]).at(0)
+  if (!current) return response.status(404).json({ error: 'Question not found.' })
+  db.run('UPDATE prep_questions SET active = 0 WHERE id = ?', [current.id])
+  persist()
+  creatorLog('Deleted prep question', `${current.exam} · ${current.subject}`)
+  response.json({ deleted: true })
+})
+
 app.post('/api/creator/prep/questions/import', creatorAuth, (request, response) => {
   const input = request.body?.questions
   if (!Array.isArray(input) || input.length < 1 || input.length > 500) {
