@@ -7,13 +7,49 @@ android {
         applicationId "edu.timpriest.cbt"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    flavorDimensions "portalRole"
+    productFlavors {
+        admin {
+            dimension "portalRole"
+            applicationIdSuffix ".admin"
+            resValue "string", "app_name", "TIMPRIEST EDU Admin"
+        }
+        teacher {
+            dimension "portalRole"
+            applicationIdSuffix ".teacher"
+            resValue "string", "app_name", "TIMPRIEST EDU Teacher"
+        }
+        student {
+            dimension "portalRole"
+            applicationIdSuffix ".student"
+            resValue "string", "app_name", "TIMPRIEST EDU Student"
+        }
+        creator {
+            dimension "portalRole"
+            applicationIdSuffix ".creator"
+            resValue "string", "app_name", "TIMPRIEST EDU Creator"
+            resValue "string", "title_activity_main", "TIMPRIEST EDU Creator"
+        }
+        prep {
+            dimension "portalRole"
+            applicationIdSuffix ".prep"
+            resValue "string", "app_name", "TIMPRIEST EDU Prep"
+            resValue "string", "title_activity_main", "TIMPRIEST EDU Prep"
+        }
+        ambassador {
+            dimension "portalRole"
+            applicationIdSuffix ".ambassador"
+            resValue "string", "app_name", "TIMPRIEST EDU Ambassador"
+            resValue "string", "title_activity_main", "TIMPRIEST EDU Ambassador"
         }
     }
     buildTypes {

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { isStudentSection, STUDENT_SECTIONS } from './studentSections'
 
 type Row = { name: string; studentId: string; classSection: string; error?: string }
 type Props = { token: string | null; refresh: () => Promise<void>; showNotice: (message: string) => void }
@@ -35,6 +36,7 @@ function parseCsv(text: string): Row[] {
     const classSection = cells[classIndex]?.trim() || ''
     let error = ''
     if (!name || !studentId || !classSection) error = 'Name, Student ID, and class section are required.'
+    else if (!isStudentSection(classSection)) error = `Choose one of the available SSS sections: ${STUDENT_SECTIONS.join(', ')}.`
     else if (seen.has(studentId)) error = 'Duplicate Student ID in this file.'
     seen.add(studentId)
     rows.push({ name, studentId, classSection, error: error || undefined })
@@ -48,7 +50,7 @@ export default function StudentCsvImport({ token, refresh, showNotice }: Props) 
   const validRows = rows.filter((row) => !row.error)
 
   const downloadTemplate = () => {
-    const blob = new Blob(['name,studentId,classSection\nExample Student,STUDENT-001,SSS 1\n'], { type: 'text/csv;charset=utf-8' })
+    const blob = new Blob([`name,studentId,classSection\nExample Student,STUDENT-001,${STUDENT_SECTIONS[0]}\n`], { type: 'text/csv;charset=utf-8' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob); link.download = 'timpriest-student-registration.csv'; link.click(); URL.revokeObjectURL(link.href)
   }
@@ -70,5 +72,5 @@ export default function StudentCsvImport({ token, refresh, showNotice }: Props) 
     setBusy(false); setRows([]); await refresh(); showNotice(`${created} student${created === 1 ? '' : 's'} imported${rejected ? `, ${rejected} rejected as duplicates` : ''}.`)
   }
 
-  return <section className="csv-import-panel"><div className="csv-import-heading"><div><p className="eyebrow">Bulk registration</p><h3>Import students from CSV</h3><p>Use the columns <strong>name</strong>, <strong>studentId</strong>, and <strong>classSection</strong>.</p></div><button className="secondary-button" type="button" onClick={downloadTemplate}>Download template</button></div><label className="csv-file-button">Choose CSV file<input type="file" accept=".csv,text/csv" onChange={chooseFile} /></label>{rows.length > 0 && <><div className="csv-summary"><span>{validRows.length} ready to import</span><span>{rows.filter((row) => row.error).length} need attention</span></div><div className="csv-preview">{rows.map((row, index) => <div className="csv-row" key={`${row.studentId}-${index}`}><span>{row.name || 'Unnamed student'}</span><strong>{row.studentId || 'No ID'}</strong><span>{row.classSection || 'No class'}</span><small className={row.error ? 'csv-error' : 'csv-ok'}>{row.error || 'Ready'}</small></div>)}</div><button className="primary-button" type="button" disabled={!validRows.length || busy} onClick={importStudents}>{busy ? 'Importing...' : `Import ${validRows.length} students`}</button></>}</section>
+  return <section className="csv-import-panel"><div className="csv-import-heading"><div><p className="eyebrow">Bulk registration</p><h3>Import students from CSV</h3><p>Use the columns <strong>name</strong>, <strong>studentId</strong>, and <strong>classSection</strong>. Sections: {STUDENT_SECTIONS.join(', ')}.</p></div><button className="secondary-button" type="button" onClick={downloadTemplate}>Download template</button></div><label className="csv-file-button">Choose CSV file<input type="file" accept=".csv,text/csv" onChange={chooseFile} /></label>{rows.length > 0 && <><div className="csv-summary"><span>{validRows.length} ready to import</span><span>{rows.filter((row) => row.error).length} need attention</span></div><div className="csv-preview">{rows.map((row, index) => <div className="csv-row" key={`${row.studentId}-${index}`}><span>{row.name || 'Unnamed student'}</span><strong>{row.studentId || 'No ID'}</strong><span>{row.classSection || 'No class'}</span><small className={row.error ? 'csv-error' : 'csv-ok'}>{row.error || 'Ready'}</small></div>)}</div><button className="primary-button" type="button" disabled={!validRows.length || busy} onClick={importStudents}>{busy ? 'Importing...' : `Import ${validRows.length} students`}</button></>}</section>
 }

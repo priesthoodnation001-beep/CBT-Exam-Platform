@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import type { ReactNode } from 'react'
+import { DEFAULT_SCHOOL_COLOR, schoolColorStyle } from './schoolColor'
 import './shells.css'
 
 export type ShellRole = 'Admin' | 'Teacher' | 'Student'
@@ -15,6 +17,7 @@ type Props = {
   menuOpen: boolean
   onMenu: (open: boolean) => void
   examMode?: boolean
+  brandColor?: string
   children: ReactNode
 }
 
@@ -25,9 +28,11 @@ const ICONS: Record<string, string> = {
   'My exams': 'M6 3h9l4 4v14H6z M14 3v5h5 M9 13h6 M9 17h6',
   Questions: 'M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3z M9.5 19h5 M10.5 21.5h3',
   Approvals: 'M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6l8-3z M9 12l2.2 2.2L15.5 10',
+  Archived: 'M3 7h18v14H3z M3 7l2-4h14l2 4 M9 12h6',
   Results: 'M4 20V10 M10 20V4 M16 20v-7 M22 20H2',
   Billing: 'M3 6h18v12H3z M3 10h18 M7 15h3',
   Profile: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0',
+  Appearance: 'M12 3v2 M12 19v2 M3 12h2 M19 12h2 M5.64 5.64l1.42 1.42 M16.94 16.94l1.42 1.42 M18.36 5.64l-1.42 1.42 M7.06 16.94l-1.42 1.42 M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
   logout: 'M9 4H5v16h4 M16 8l4 4-4 4 M20 12H9',
   menu: 'M4 7h16 M4 12h16 M4 17h16'
 }
@@ -45,10 +50,13 @@ const SIDE_NOTE: Record<ShellRole, string> = {
 }
 
 // One shell per role. The pages inside it (children) are the same working screens as before.
-export default function DashboardShell({ role, centre, userName, detail, items, tab, onTab, onLogout, menuOpen, onMenu, examMode = false, children }: Props) {
+export default function DashboardShell({ role, centre, userName, detail, items, tab, onTab, onLogout, menuOpen, onMenu, examMode = false, brandColor = DEFAULT_SCHOOL_COLOR, children }: Props) {
+  const [accountsExpanded, setAccountsExpanded] = useState(tab === 'Teachers' || tab === 'Students')
+  const schoolTheme = { ...schoolColorStyle(brandColor) }
+
   if (role === 'Student') {
     return (
-      <div className={`ds ds-student ${examMode ? 'exam-mode' : ''}`}>
+      <div className={`ds ds-student ds-school-themed ${examMode ? 'exam-mode' : ''}`} style={schoolTheme}>
         <header className="ds-sbar">
           <div className="ds-sbar-in">
             <div className="ds-brand"><img src="/logo.svg" alt="" /><div><strong>TIMPRIEST EDU</strong><small>{centre}</small></div></div>
@@ -67,12 +75,48 @@ export default function DashboardShell({ role, centre, userName, detail, items, 
   }
 
   return (
-    <div className={`ds ds-${role.toLowerCase()} ${menuOpen ? 'open' : ''}`}>
+    <div className={`ds ds-${role.toLowerCase()} ds-school-themed ${menuOpen ? 'open' : ''}`} style={schoolTheme}>
       <aside className="ds-side">
         <div className="ds-brand"><img src="/logo.svg" alt="" /><div><strong>TIMPRIEST EDU</strong><small>{SIDE_NOTE[role]}</small></div></div>
         <div className="ds-centre"><span className="ds-dot" /><div><strong>{centre}</strong><small>{role} portal</small></div></div>
         <nav className="ds-nav" aria-label={`${role} pages`}>
-          {items.map((item) => <button key={item} className={tab === item ? 'active' : ''} aria-current={tab === item ? 'page' : undefined} onClick={() => { onTab(item); onMenu(false) }}><Icon name={item} />{item}</button>)}
+          {items.map((item) => {
+            const isAccountChild = role === 'Admin' && (item === 'Teachers' || item === 'Students')
+            if (role === 'Admin' && item === 'Accounts') {
+              const expanded = accountsExpanded || tab === 'Teachers' || tab === 'Students'
+              return (
+                <div className="ds-nav-group" key="Accounts">
+                  <button
+                    className={`ds-nav-parent${tab === 'Accounts' || tab === 'Teachers' || tab === 'Students' ? ' active' : ''}`}
+                    aria-expanded={expanded}
+                    aria-controls="admin-account-submenu"
+                    onClick={() => {
+                      if (expanded && (tab === 'Teachers' || tab === 'Students')) onTab('Accounts')
+                      setAccountsExpanded(!expanded)
+                    }}
+                  >
+                    <Icon name="Accounts" />
+                    <span>Accounts</span>
+                    <span className={`ds-nav-chevron${expanded ? ' expanded' : ''}`} aria-hidden="true">⌄</span>
+                  </button>
+                  {expanded && (
+                    <div className="ds-nav-submenu" id="admin-account-submenu">
+                      {(['Teachers', 'Students'] as const).map((child) => (
+                        <button key={child} className={`ds-nav-account-child${tab === child ? ' active' : ''}`} aria-current={tab === child ? 'page' : undefined} onClick={() => { onTab(child); onMenu(false) }}>
+                          {child}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            }
+            if (role === 'Admin' && (item === 'Accounts' || isAccountChild)) return null
+            return <button key={item} className={`${tab === item ? 'active' : ''}${isAccountChild ? ' ds-nav-account-child' : ''}`} aria-current={tab === item ? 'page' : undefined} onClick={() => { onTab(item); onMenu(false) }}>
+              {!isAccountChild && <Icon name={item} />}
+              <span>{item}</span>
+            </button>
+          })}
         </nav>
         <div className="ds-side-foot">
           <button className="ds-logout" onClick={onLogout}><Icon name="logout" />Log out</button>

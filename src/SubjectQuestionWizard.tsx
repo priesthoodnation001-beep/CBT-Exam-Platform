@@ -8,9 +8,10 @@ import { API_BASE } from './apiBase'
 
 type Exam = { id: string; subject: string }
 type Question = { id: string; subject: string; text: string; options: string[]; answer?: number }
+type SubmittedSubject = { subject: string; duration: number; status: 'pending' | 'approved' | 'rejected'; rejection_reason?: string; review_comment?: string; approved_at?: string; canEdit: boolean; questions: Question[] }
 type DraftQuestion = { subject: string; text: string; options: string[]; answer: number; examId?: string }
 type SavedDraft = { id: string; subject: string; duration: number; questions: { text: string; options: string[]; answer: number }[]; updatedAt: string }
-type Props = { questions: Question[]; exams: Exam[]; token: string | null; refresh: () => Promise<void>; showNotice: (message: string) => void; aiReady?: boolean; aiRemaining?: number }
+type Props = { questions: Question[]; exams: Exam[]; submissions: SubmittedSubject[]; token: string | null; refresh: () => Promise<void>; showNotice: (message: string) => void; aiReady?: boolean; aiRemaining?: number }
 
 const emptyForm = { text: '', options: ['', '', '', ''], answer: 0 }
 const MATH_SYMBOLS = ['±', '×', '÷', '√', 'π', '∑', '∫', '≤', '≥', '≠', '∞', '°', '₀₁₂₃₄₅₆₇₈₉', '⁰¹²³⁴⁵⁶⁷⁸⁹', '→', '⇌']
@@ -21,7 +22,7 @@ async function saveQuestion(token: string | null, question: DraftQuestion) {
   if (!response.ok) { const error = await response.json().catch(() => ({ error: 'Could not save question.' })); throw new Error(error.error) }
 }
 
-export default function SubjectQuestionWizard({ questions, exams, token, refresh, showNotice, aiReady, aiRemaining }: Props) {
+export default function SubjectQuestionWizard({ questions, exams, submissions, token, refresh, showNotice, aiReady, aiRemaining }: Props) {
   const [subject, setSubject] = useState('')
   const [duration, setDuration] = useState(30)
   const [draft, setDraft] = useState<DraftQuestion[]>([])
@@ -35,6 +36,14 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
   const remaining = aiLeft ?? aiRemaining ?? 0
   const [savedDrafts, setSavedDrafts] = useState<SavedDraft[]>([])
   const [savingDraft, setSavingDraft] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState(emptyForm)
+  const [savingReviewQuestion, setSavingReviewQuestion] = useState(false)
+  const [addingToSubject, setAddingToSubject] = useState<string | null>(null)
+  const [addQuestionForm, setAddQuestionForm] = useState(emptyForm)
+  const [savingAddedQuestion, setSavingAddedQuestion] = useState(false)
+  const [collapsedReturnedSubjects, setCollapsedReturnedSubjects] = useState<Set<string>>(() => new Set())
   const [importOpen, setImportOpen] = useState(false)
   const [tableOpen, setTableOpen] = useState(false)
   const [tableCells, setTableCells] = useState([['Heading 1', 'Heading 2', 'Heading 3'], ['', '', ''], ['', '', '']])
@@ -166,6 +175,95 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
     } catch { showNotice('Could not reach the AI helper. Check your connection.') } finally { setAiBusy(false) }
   }
 
+  const editSubmittedQuestion = (question: Question) => {
+    setEditingQuestionId(question.id)
+    setEditForm({ text: question.text, options: [...question.options], answer: question.answer ?? 0 })
+  }
+
+  const saveSubmittedQuestion = async (questionId: string) => {
+    setSavingReviewQuestion(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/teacher/questions/${encodeURIComponent(questionId)}`, {
+        method: 'PUT',
+        headers: authHeaders,
+        body: JSON.stringify(editForm)
+      })
+      const body = await response.json().catch(() => ({ error: 'Could not update question.' }))
+      if (!response.ok) throw new Error(body.error || 'Could not update question.')
+      await refresh()
+      setEditingQuestionId(null)
+      showNotice('Question corrected and saved.')
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Could not update question.')
+    } finally {
+      setSavingReviewQuestion(false)
+    }
+  }
+
+  const addSubmittedQuestion = async (submission: SubmittedSubject) => {
+    if (!addQuestionForm.text.trim() || addQuestionForm.options.some((option) => !option.trim())) {
+      showNotice('Enter the question and all four options first.')
+      return
+    }
+    setSavingAddedQuestion(true)
+    try {
+      await saveQuestion(token, {
+        subject: submission.subject,
+        text: addQuestionForm.text.trim(),
+        options: addQuestionForm.options.map((option) => option.trim()),
+        answer: addQuestionForm.answer,
+        examId: examFor(submission.subject)
+      })
+      await refresh()
+      setAddQuestionForm(emptyForm)
+      setAddingToSubject(null)
+      showNotice(`Question added to ${submission.subject}.`)
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Could not add question.')
+    } finally {
+      setSavingAddedQuestion(false)
+    }
+  }
+
+  const removeSubmittedQuestion = async (question: Question) => {
+    if (!window.confirm('Remove this question from the returned subject set?')) return
+    try {
+      const response = await fetch(`${API_BASE}/api/teacher/questions/${encodeURIComponent(question.id)}`, { method: 'DELETE', headers: authHeaders })
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ error: 'Could not remove question.' }))
+        throw new Error(body.error || 'Could not remove question.')
+      }
+      await refresh()
+      showNotice('Question removed from the subject set.')
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Could not remove question.')
+    }
+  }
+
+  const claimSubject = async (subject: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/subjects/${encodeURIComponent(subject)}/claim-returned`, { method: 'POST', headers: authHeaders })
+      const body = await response.json().catch(() => ({ error: 'Could not open returned questions.' }))
+      if (!response.ok) throw new Error(body.error || 'Could not open returned questions.')
+      await refresh()
+      showNotice(`${subject} is ready for corrections.`)
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Could not open returned questions.')
+    }
+  }
+
+  const resubmitSubject = async (name: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/subjects/${encodeURIComponent(name)}/resubmit`, { method: 'POST', headers: authHeaders })
+      const body = await response.json().catch(() => ({ error: 'Could not resubmit subject.' }))
+      if (!response.ok) throw new Error(body.error || 'Could not resubmit subject.')
+      await refresh()
+      showNotice(`${name} resubmitted for Admin approval.`)
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Could not resubmit subject.')
+    }
+  }
+
   const submitSubject = async () => {
     const current = makeQuestion(); if (!current) return
     if (duration < 1 || duration > 30) { showNotice('Subject time must be between 1 and 30 minutes.'); return }
@@ -179,8 +277,25 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
       for (const question of finalDraft) await saveQuestion(token, question)
       const finished = savedDrafts.find((item) => item.subject.toLowerCase() === subjectName.toLowerCase())
       if (finished) await fetch(`${API_BASE}/api/drafts/${finished.id}`, { method: 'DELETE', headers: authHeaders }).catch(() => undefined)
-      setDraft([]); setStep(0); setSubject(''); setDuration(30); setForm(emptyForm); await refresh(); await loadDrafts(); showNotice(`${subjectName} submitted for Admin approval.`)
+      setDraft([]); setStep(0); setSubject(''); setDuration(30); setForm(emptyForm); setPreviewOpen(false); await refresh(); await loadDrafts(); showNotice(`${subjectName} submitted for Admin approval.`)
     } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not submit questions.') }
+  }
+
+  const previewSubject = () => {
+    const current = makeQuestion()
+    if (!current) return
+    if (duration < 1 || duration > 30) { showNotice('Subject time must be between 1 and 30 minutes.'); return }
+    const merged = draft.length > step ? draft.map((item, index) => index === step ? current : item) : [...draft, current]
+    const unfinished = merged.findIndex((item) => !item.text.trim() || item.options.some((option) => !option.trim()))
+    if (unfinished !== -1) {
+      setDraft(merged)
+      setStep(unfinished)
+      setForm({ text: merged[unfinished].text, options: merged[unfinished].options, answer: merged[unfinished].answer })
+      showNotice(`Question ${unfinished + 1} is not finished. Complete it before previewing.`)
+      return
+    }
+    setDraft(merged)
+    setPreviewOpen(true)
   }
 
   return (
@@ -189,7 +304,66 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
         <div><p className="eyebrow">Teacher workspace</p><h2>Set questions by subject</h2></div>
         <QuestionPrintButton questions={questions} />
       </div>
-      <div className="wizard-layout">
+      <section className="submitted-subjects" aria-labelledby="submitted-subjects-heading">
+        <div className="submitted-subjects-heading"><div><p className="eyebrow">Review progress</p><h3 id="submitted-subjects-heading">My question sets</h3></div><span>{submissions.filter((submission) => submission.canEdit).length} subject{submissions.filter((submission) => submission.canEdit).length === 1 ? '' : 's'}</span></div>
+        {submissions.length === 0
+          ? <p className="submitted-empty">Your submitted questions and review updates will appear here.</p>
+          : submissions.map((submission) => (
+            <details
+              className="submitted-subject"
+              key={submission.subject}
+              open={submission.status === 'rejected' && !collapsedReturnedSubjects.has(submission.subject)}
+              onToggle={(event) => {
+                const isOpen = event.currentTarget.open
+                setCollapsedReturnedSubjects((current) => {
+                  const isCollapsed = current.has(submission.subject)
+                  if ((isOpen && !isCollapsed) || (!isOpen && isCollapsed)) return current
+                  const next = new Set(current)
+                  if (isOpen) next.delete(submission.subject)
+                  else next.add(submission.subject)
+                  return next
+                })
+              }}
+            >
+              <summary>
+                <span><strong>{submission.subject}</strong><small>{submission.questions.length} question{submission.questions.length === 1 ? '' : 's'} · {submission.duration} minutes</small></span>
+                <span className={`review-status ${submission.status}`}>{submission.status}</span>
+              </summary>
+              {submission.status === 'rejected' && submission.rejection_reason && <p className="review-feedback"><strong>Admin feedback:</strong> {submission.rejection_reason}</p>}
+              {submission.status === 'approved' && submission.review_comment && <p className="review-feedback approved-feedback"><strong>Admin comment:</strong> {submission.review_comment}</p>}
+              {submission.status === 'rejected' && submission.canEdit && submission.questions.length === 0 && <p className="submitted-empty">All questions have been removed. Add at least one question before resubmitting.</p>}
+              {!submission.canEdit && <div className="legacy-submission-note"><p>This older question set has no teacher assigned yet. Claim it to save it to your dashboard and manage its questions.</p><button className="primary-button small-button" type="button" onClick={() => void claimSubject(submission.subject)}>Claim question set</button></div>}
+              <div className="submitted-question-list">
+                {submission.questions.map((question, index) => (
+                  <article className="submitted-question" key={question.id}>
+                    <div className="submitted-question-heading"><strong>Question {index + 1}</strong>{submission.canEdit && <span><button className="text-button" type="button" onClick={() => editSubmittedQuestion(question)}>{editingQuestionId === question.id ? 'Editing' : 'Edit question'}</button>{submission.status === 'rejected' && <button className="text-button remove-submitted-question" type="button" onClick={() => void removeSubmittedQuestion(question)}>Remove</button>}</span>}</div>
+                    {editingQuestionId === question.id && submission.canEdit
+                      ? <div className="submitted-question-editor">
+                        <label>Question text<textarea value={editForm.text} onChange={(event) => setEditForm((current) => ({ ...current, text: event.target.value }))} /></label>
+                        <div className="option-grid">{editForm.options.map((option, optionIndex) => <label key={optionIndex}>Option {String.fromCharCode(65 + optionIndex)}<input value={option} onChange={(event) => setEditForm((current) => ({ ...current, options: current.options.map((item, index) => index === optionIndex ? event.target.value : item) }))} /></label>)}</div>
+                        <label>Correct answer<select value={editForm.answer} onChange={(event) => setEditForm((current) => ({ ...current, answer: Number(event.target.value) }))}>{editForm.options.map((_, optionIndex) => <option value={optionIndex} key={optionIndex}>Option {String.fromCharCode(65 + optionIndex)}</option>)}</select></label>
+                        <div className="wizard-actions"><button className="secondary-button" type="button" onClick={() => setEditingQuestionId(null)}>Cancel</button><button className="primary-button" type="button" disabled={savingReviewQuestion} onClick={() => void saveSubmittedQuestion(question.id)}>{savingReviewQuestion ? 'Saving...' : 'Save correction'}</button></div>
+                      </div>
+                      : <><p>{question.text}</p><ol type="A">{question.options.map((option, optionIndex) => <li key={optionIndex}>{option}{question.answer === optionIndex ? ' (correct answer)' : ''}</li>)}</ol></>}
+                  </article>
+                ))}
+              </div>
+              {submission.status === 'rejected' && <>
+                {submission.canEdit && (addingToSubject === submission.subject
+                  ? <div className="submitted-question-editor add-submitted-question">
+                    <h4>Add a question</h4>
+                    <label>Question text<textarea value={addQuestionForm.text} onChange={(event) => setAddQuestionForm((current) => ({ ...current, text: event.target.value }))} /></label>
+                    <div className="option-grid">{addQuestionForm.options.map((option, optionIndex) => <label key={optionIndex}>Option {String.fromCharCode(65 + optionIndex)}<input value={option} onChange={(event) => setAddQuestionForm((current) => ({ ...current, options: current.options.map((item, index) => index === optionIndex ? event.target.value : item) }))} /></label>)}</div>
+                    <label>Correct answer<select value={addQuestionForm.answer} onChange={(event) => setAddQuestionForm((current) => ({ ...current, answer: Number(event.target.value) }))}>{addQuestionForm.options.map((_, optionIndex) => <option value={optionIndex} key={optionIndex}>Option {String.fromCharCode(65 + optionIndex)}</option>)}</select></label>
+                    <div className="wizard-actions"><button className="secondary-button" type="button" onClick={() => setAddingToSubject(null)}>Cancel</button><button className="primary-button" type="button" disabled={savingAddedQuestion} onClick={() => void addSubmittedQuestion(submission)}>{savingAddedQuestion ? 'Adding...' : 'Add question'}</button></div>
+                  </div>
+                  : <button className="secondary-button small-button add-submitted-question-button" type="button" onClick={() => { setAddQuestionForm(emptyForm); setAddingToSubject(submission.subject) }}>+ Add a question</button>)}
+                {submission.canEdit && <button className="primary-button small-button" type="button" onClick={() => void resubmitSubject(submission.subject)}>Resubmit for approval</button>}
+              </>}
+            </details>
+          ))}
+      </section>
+      <div className="wizard-layout wizard-layout-single">
         <div className="form-panel question-wizard">
           {savedDrafts.length > 0 && (
             <div className="draft-box">
@@ -204,6 +378,7 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
               ))}
             </div>
           )}
+          {!previewOpen ? <>
           <div className="wizard-progress"><span>Question {step + 1}</span><span>{draft.length} saved in this set</span></div>
           <label>Subject name
             <input list="known-subjects" value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="Enter subject name" />
@@ -261,14 +436,33 @@ export default function SubjectQuestionWizard({ questions, exams, token, refresh
             <button className="secondary-button" type="button" onClick={previousStep} disabled={step === 0}>← Previous</button>
             <button className="secondary-button" type="button" onClick={nextStep}>Next →</button>
             <button className="secondary-button" type="button" onClick={() => void saveForLater()} disabled={savingDraft}>{savingDraft ? 'Saving...' : 'Save draft'}</button>
-            <button className="primary-button" type="button" onClick={submitSubject}>Submit subject</button>
+            <button className="primary-button" type="button" onClick={previewSubject}>Preview question set</button>
           </div>
-        </div>
-        <div className="panel wizard-help">
-          <p className="eyebrow">How it works</p>
-          <h3>Build one subject at a time.</h3>
-          <p>Type the subject name and set a time from 1 to 30 minutes. Next saves the current question, Previous lets you revise it, Save draft keeps your work so you can finish another day, and Submit sends the complete subject to the Admin for approval.</p>
-          <div className="wizard-count">{questions.filter((question) => question.subject.toLowerCase() === subjectName.toLowerCase()).length}<small>approved or pending questions in this subject</small></div>
+          </> : <section className="question-set-review" aria-labelledby="question-set-review-title">
+            <div className="question-set-review-heading">
+              <div><p className="eyebrow">Final check</p><h3 id="question-set-review-title">{subjectName} question set</h3><p>{draft.length} questions · {duration} minute time limit</p></div>
+              <button className="secondary-button" type="button" onClick={() => setPreviewOpen(false)}>← Back to editing</button>
+            </div>
+            <div className="question-set-review-list">
+              {draft.map((question, index) => (
+                <article className="question-set-review-item" key={`${index}-${question.text}`}>
+                  <div className="submitted-question-heading"><strong>Question {index + 1}</strong><button className="text-button" type="button" onClick={() => {
+                    setStep(index)
+                    setForm({ text: question.text, options: question.options, answer: question.answer })
+                    setPreviewOpen(false)
+                  }}>Edit</button></div>
+                  <QuestionContent content={question.text} />
+                  <ol type="A">{question.options.map((option, optionIndex) => <li className={question.answer === optionIndex ? 'approval-correct-option' : ''} key={optionIndex}>
+                    <QuestionContent content={option} />{question.answer === optionIndex && <strong> · Correct answer</strong>}
+                  </li>)}</ol>
+                </article>
+              ))}
+            </div>
+            <div className="wizard-actions">
+              <button className="secondary-button" type="button" onClick={() => setPreviewOpen(false)}>Continue editing</button>
+              <button className="primary-button" type="button" onClick={() => void submitSubject()}>Submit subject for Admin review</button>
+            </div>
+          </section>}
         </div>
       </div>
       {importOpen && <ImportQuestions subject={subjectName} onClose={() => setImportOpen(false)} onAdd={addImported} />}

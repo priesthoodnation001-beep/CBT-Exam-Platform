@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import QuestionContent from './QuestionContent'
 import './exam-runner.css'
 
-// The screen a student writes the exam on. It shows when the exam started, when it ends, and the time left.
+// The screen a student writes the exam on. It shows only the time allowed and the countdown, with no start or end clock time.
 // When the time runs out, the exam is submitted automatically with the answers chosen so far.
 
 type RunnerQuestion = { id: string; text: string; options: string[] }
@@ -110,8 +110,6 @@ export default function TimedExamRunner({ exam, questions, selectedAnswers, setS
       <header className={`ex-bar ex-${level}`}>
         <div className="ex-title"><strong>{exam.title}</strong><span>{exam.subject}</span></div>
         <div className="ex-times">
-          <div><small>Started</small><b>{clockTime(started)}</b></div>
-          <div><small>Ends</small><b>{clockTime(endsAt)}</b></div>
           <div><small>Time allowed</small><b>{minutes} min</b></div>
         </div>
         <div className="ex-clock" role="timer" aria-live="off"><small>Time left</small><strong>{countdown(remaining)}</strong></div>

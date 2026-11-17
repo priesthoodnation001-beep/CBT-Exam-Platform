@@ -1,20 +1,23 @@
-// TIMPRIEST EDU desktop app (Windows). One installer, two modes chosen on first launch:
-//   School Server    - runs the exam server on this computer (offline) and opens it in a window.
-//   Student computer - opens the school server's address in a window.
+// TIMPRIEST EDU role-specific desktop apps (Windows).
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const http = require('http')
+const { autoUpdater } = require('electron-updater')
 
 const PORT = 8787
 const ROOT = path.join(__dirname, '..')
+const DESKTOP_ROLE = require(path.join(ROOT, 'package.json')).desktopRole || 'All'
+const CLOUD_ORIGIN = 'https://exam.timpriestedu.name.ng'
 const CONFIG_FILE = path.join(app.getPath('userData'), 'config.json')
 const DATA_ROOT = path.join(app.getPath('documents'), 'TIMPRIEST EDU')
 
 let config = {}
 let win = null
 let quitting = false
+let manualUpdateCheck = false
+let updateErrorDialogOpen = false
 
 function readConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) } catch { return {} }
@@ -93,13 +96,16 @@ function normaliseAddress(input) {
 }
 
 function showAddresses() {
-  const list = lanAddresses().map((address) => `http://${address}:${PORT}/your-school-name`)
+  const list = lanAddresses().flatMap((address) => {
+    const base = `http://${address}:${PORT}/cbt/your-school-name`
+    return [`Admin: ${base}/admin`, `Teacher: ${base}/teacher`, `Student: ${base}/student`]
+  })
   dialog.showMessageBox(win, {
     type: 'info',
     title: 'Student address',
-    message: list.length ? 'Students and teachers use this address:' : 'No network found.',
+    message: list.length ? 'Share the matching address with each person:' : 'No network found.',
     detail: list.length
-      ? `${list.join('\n')}\n\nReplace "your-school-name" with your school's link name, as shown after you sign in. Keep this window open while exams run.`
+      ? `${list.join('\n')}\n\nReplace "your-school-name" with your school's exact link name. Connect all devices to the same school Wi-Fi or LAN. Keep this computer and the TIMPRIEST EDU app running while exams are in progress.`
       : 'Connect this computer to the school router or Wi-Fi, then restart the app.'
   })
 }
@@ -108,7 +114,90 @@ function showConnect(message = '') {
   win.loadFile(path.join(__dirname, 'connect.html'), { query: { message, address: config.serverAddress || '' } })
 }
 
+function reportUpdateError(error) {
+  // Automatic checks at startup stay silent: no internet, or no published version, is normal and not worth a pop-up.
+  // Only when someone clicks "Check for updates" do we show a message.
+  const wasManual = manualUpdateCheck
+  manualUpdateCheck = false
+  console.error('Update check failed', error)
+  if (!wasManual || updateErrorDialogOpen) return
+  updateErrorDialogOpen = true
+  const detail = String(error && error.message || error)
+  const nothingPublished = /no published versions|latest\.yml|status code 404|cannot find/i.test(detail)
+  const options = nothingPublished
+    ? { type: 'info', title: 'No updates available', message: 'TIMPRIEST EDU is up to date.' }
+    : { type: 'info', title: 'Could not check for updates', message: 'TIMPRIEST EDU could not check for updates right now.', detail: 'Make sure this computer is connected to the internet, then try again.' }
+  void dialog.showMessageBox(win, options).finally(() => { updateErrorDialogOpen = false })
+}
+
+function configureAutoUpdates() {
+  if (!app.isPackaged) return
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.on('error', reportUpdateError)
+  autoUpdater.on('update-not-available', () => {
+    if (!manualUpdateCheck) return
+    manualUpdateCheck = false
+    void dialog.showMessageBox(win, {
+      type: 'info',
+      title: 'No updates available',
+      message: 'TIMPRIEST EDU is up to date.'
+    })
+  })
+  autoUpdater.on('update-available', (info) => {
+    console.info(`TIMPRIEST EDU update ${info.version} is available`)
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    manualUpdateCheck = false
+    void dialog.showMessageBox(win, {
+      type: 'info',
+      title: 'Update ready',
+      message: `TIMPRIEST EDU ${info.version} has been downloaded.`,
+      detail: 'Restart now to install the update, or choose Later to install it when you next close the app.',
+      buttons: ['Restart now', 'Later'],
+      defaultId: 0,
+      cancelId: 1
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall()
+    })
+  })
+}
+
+async function checkForUpdates(manual = false) {
+  if (!app.isPackaged) {
+    if (manual) {
+      await dialog.showMessageBox(win, {
+        type: 'info',
+        title: 'Updates unavailable',
+        message: 'Automatic updates are available in the installed desktop app.'
+      })
+    }
+    return
+  }
+
+  manualUpdateCheck = manual
+  try {
+    await autoUpdater.checkForUpdates()
+  } catch (error) {
+    reportUpdateError(error)
+  }
+}
+
 function buildMenu() {
+  if (DESKTOP_ROLE !== 'All') {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{
+      label: `TIMPRIEST EDU ${DESKTOP_ROLE}`,
+      submenu: [
+        { label: 'Check for updates', click: () => { void checkForUpdates(true) } },
+        { type: 'separator' },
+        { role: 'reload' },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    }]))
+    return
+  }
   const isServer = config.mode === 'server'
   const items = isServer
     ? [
@@ -116,13 +205,17 @@ function buildMenu() {
         { label: 'Open backups folder', click: () => { fs.mkdirSync(path.join(DATA_ROOT, 'backups'), { recursive: true }); shell.openPath(path.join(DATA_ROOT, 'backups')) } }
       ]
     : [{ label: 'Change server address', click: () => showConnect() }]
+  if (DESKTOP_ROLE === 'All') {
+    items.push({ label: 'Change mode (server / client)', click: () => { if (chooseMode()) { quitting = true; app.relaunch(); app.quit() } } })
+  }
   items.push(
-    { label: 'Change mode (server / student)', click: () => { if (chooseMode()) { quitting = true; app.relaunch(); app.quit() } } },
+    { type: 'separator' },
+    { label: 'Check for updates', click: () => { void checkForUpdates(true) } },
     { type: 'separator' },
     { role: 'reload' },
     { role: 'quit' }
   )
-  Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'TIMPRIEST EDU', submenu: items }]))
+  Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: `TIMPRIEST EDU ${DESKTOP_ROLE}`, submenu: items }]))
 }
 
 function createWindow() {
@@ -173,6 +266,13 @@ function openStudentMode() {
   else win.loadURL(config.serverAddress)
 }
 
+function openHostedRoleApp() {
+  createWindow()
+  const target = new URL('/cbt', CLOUD_ORIGIN)
+  target.searchParams.set('appRole', DESKTOP_ROLE.toLowerCase())
+  win.loadURL(target.toString())
+}
+
 ipcMain.handle('save-server', (_event, input) => {
   const address = normaliseAddress(input)
   if (!address) return { ok: false, error: 'Enter the address, for example 192.168.1.10 or http://192.168.1.10:8787/your-school-name' }
@@ -187,8 +287,15 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus() } })
   app.whenReady().then(() => {
     config = readConfig()
-    if (!config.mode && !chooseMode()) { app.quit(); return }
-    if (config.mode === 'server') void openServerMode(); else openStudentMode()
+    configureAutoUpdates()
+    if (['Admin', 'Teacher', 'Student'].includes(DESKTOP_ROLE)) {
+      config.mode = 'cloud'
+      openHostedRoleApp()
+    } else {
+      if (!config.mode && !chooseMode()) { app.quit(); return }
+      if (config.mode === 'server') void openServerMode(); else openStudentMode()
+    }
+    void checkForUpdates()
   })
   app.on('window-all-closed', () => app.quit())
 }

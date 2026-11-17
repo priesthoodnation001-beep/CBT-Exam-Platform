@@ -24,7 +24,7 @@ const VOUCHER_PUBLIC = (() => {
 })()
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY || ''
 const STARTER_CREDITS = Number(process.env.STARTER_CREDITS || 10)
-const CREDIT_PRICE_KOBO = Number(process.env.CREDIT_PRICE_KOBO || 5000) // 5000 kobo = N50 per credit
+const DEFAULT_CREDIT_PRICE_KOBO = Number(process.env.CREDIT_PRICE_KOBO || 5000)
 const MIN_CREDITS = 10
 const MAX_CREDITS = 5000
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || ''
@@ -104,6 +104,7 @@ function publicUser(user) {
 function publicQuestion(question, includeAnswer = false) {
   const result = { id: question.id, examId: question.exam_id, subject: question.subject, text: question.text, options: JSON.parse(question.options) }
   if (includeAnswer) result.answer = Number(question.answer)
+  if (Number.isFinite(Number(question.created_at))) result.createdAt = Number(question.created_at)
   return result
 }
 
@@ -116,34 +117,54 @@ function classMatches(examClasses, studentClass) {
 
 const STUDENT_EXAM_ACCESS_ERROR = 'YOU ARE NOT AUTHORIZED TO ENTER THE EXAM DASHBOARD'
 
+// Exam dates and times are always read as Nigeria time (West Africa Time, UTC+1, no daylight saving),
+// whatever time zone the server computer is set to (Railway runs on UTC).
+const EXAM_TZ_OFFSET_MS = 60 * 60 * 1000
+
 function scheduledExamStart(exam) {
   const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(exam.date || ''))
   const time = /^(\d{2}):(\d{2})$/.exec(String(exam.time || ''))
   if (!date || !time) return Number.NaN
   const [, year, month, day] = date
   const [, hours, minutes] = time
-  const start = new Date(Number(year), Number(month) - 1, Number(day), Number(hours), Number(minutes)).getTime()
-  const check = new Date(start)
-  return check.getFullYear() === Number(year) && check.getMonth() === Number(month) - 1 && check.getDate() === Number(day) && check.getHours() === Number(hours) && check.getMinutes() === Number(minutes) ? start : Number.NaN
+  const wall = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hours), Number(minutes))
+  const check = new Date(wall)
+  const valid = check.getUTCFullYear() === Number(year) && check.getUTCMonth() === Number(month) - 1 && check.getUTCDate() === Number(day) && check.getUTCHours() === Number(hours) && check.getUTCMinutes() === Number(minutes)
+  return valid ? wall - EXAM_TZ_OFFSET_MS : Number.NaN
+}
+
+const SUBMIT_GRACE_MS = 2 * 60 * 1000 // small allowance for slow networks when the timer ends
+
+// An exam has no end time of its own: it stays open from its start time until 11:59 p.m. on its date.
+function scheduledExamDayEnd(exam) {
+  const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(exam.date || ''))
+  if (!date) return Number.NaN
+  return Date.UTC(Number(date[1]), Number(date[2]) - 1, Number(date[3]), 23, 59, 59, 999) - EXAM_TZ_OFFSET_MS
 }
 
 function scheduledExamHasTime(exam, now = Date.now()) {
   const startsAt = scheduledExamStart(exam)
+  const dayEnd = scheduledExamDayEnd(exam)
   const duration = Number(exam.subject_duration) > 0 ? Number(exam.subject_duration) : Number(exam.duration)
-  return Number.isFinite(startsAt) && Number.isFinite(duration) && duration > 0 && startsAt + duration * 60000 > now
+  if (!Number.isFinite(startsAt) || !Number.isFinite(dayEnd) || !Number.isFinite(duration) || duration <= 0) return false
+  if (now < dayEnd) return true
+  // A student who started before midnight keeps their own full time, even if it runs past midnight.
+  const startedAt = Number(exam.started_at)
+  return Number.isFinite(startedAt) && startedAt > 0 && startedAt + duration * 60000 + SUBMIT_GRACE_MS > now
 }
 
 function studentHasExamAccess(userId, schoolId, now = Date.now()) {
   const studentClass = studentClassOf(userId)
   const exams = rows(
-    `SELECT exams.date, exams.time, exams.duration, exams.class_section, subject_settings.duration AS subject_duration
+    `SELECT exams.id, exams.date, exams.time, exams.duration, exams.class_section, subject_settings.duration AS subject_duration,
+       (SELECT started_at FROM exam_starts WHERE exam_starts.exam_id = exams.id AND exam_starts.student_id = ?) AS started_at
      FROM exams
      JOIN subject_settings ON subject_settings.subject = exams.subject AND subject_settings.school_id = exams.school_id AND subject_settings.approved = 1
      WHERE exams.school_id = ? AND exams.status = 'Scheduled'
        AND NOT EXISTS (SELECT 1 FROM submissions WHERE submissions.exam_id = exams.id AND submissions.student_id = ?)
        AND EXISTS (SELECT 1 FROM questions WHERE questions.school_id = exams.school_id AND questions.subject = exams.subject
          AND (questions.exam_id = exams.id OR questions.exam_id IS NULL))`,
-    [schoolId, userId]
+    [userId, schoolId, userId]
   )
   return exams.some((exam) => {
     if (!classMatches(exam.class_section, studentClass)) return false
@@ -239,6 +260,81 @@ function addCredits(schoolId, change, reason, reference = null) {
   run('INSERT INTO credit_ledger (id, school_id, change, reason, reference, created_at) VALUES (?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), schoolId, change, reason, reference, new Date().toISOString()])
 }
 
+function currentCreditPriceKobo() {
+  const stored = rows('SELECT value FROM settings WHERE key = ?', ['global:credit_price_kobo']).at(0)?.value
+  const priceKobo = stored === undefined ? DEFAULT_CREDIT_PRICE_KOBO : Number(stored)
+  if (!Number.isSafeInteger(priceKobo) || priceKobo < 1 || priceKobo * MAX_CREDITS > Number.MAX_SAFE_INTEGER) {
+    throw new Error('The configured credit price is invalid.')
+  }
+  return priceKobo
+}
+
+function parseCreditPriceKobo(value) {
+  const text = String(value ?? '').trim()
+  if (!/^\d+(?:\.\d{1,2})?$/.test(text)) return null
+  const [naira, fraction = ''] = text.split('.')
+  const priceKobo = Number(naira) * 100 + Number((fraction + '00').slice(0, 2))
+  if (!Number.isSafeInteger(priceKobo) || priceKobo < 1 || priceKobo * MAX_CREDITS > Number.MAX_SAFE_INTEGER) return null
+  return priceKobo
+}
+
+function currentPrepMonthlyFeeKobo() {
+  const fees = {}
+  for (const exam of ['JAMB', 'WAEC', 'NECO']) {
+    const stored = rows('SELECT value FROM settings WHERE key = ?', [`global:prep_monthly_fee_${exam.toLowerCase()}`]).at(0)?.value
+    fees[exam] = stored === undefined ? (exam === 'JAMB' ? 150000 : 100000) : Number(stored)
+    if (!Number.isSafeInteger(fees[exam]) || fees[exam] < 100) throw new Error(`The configured ${exam} monthly prep fee is invalid.`)
+  }
+  return fees
+}
+
+function currentPrepAccess(userId, generalAccessUntil) {
+  const examAccess = Object.fromEntries(rows('SELECT exam, access_until AS accessUntil FROM prep_exam_access WHERE user_id = ?', [userId]).map((item) => [item.exam, item.accessUntil]))
+  const account = rows('SELECT selected_exam AS selectedExam, subject_selection_enabled AS subjectSelectionEnabled FROM prep_users WHERE id = ?', [userId]).at(0)
+  const selectedSubjects = Object.fromEntries(rows('SELECT exam, subject FROM prep_user_exam_subjects WHERE user_id = ? ORDER BY exam, subject COLLATE NOCASE', [userId])
+    .reduce((groups, item) => {
+      const subjects = groups.get(item.exam) || []
+      subjects.push(item.subject)
+      groups.set(item.exam, subjects)
+      return groups
+    }, new Map()))
+  const now = Date.now()
+  const legacyActive = Boolean(generalAccessUntil && Date.parse(generalAccessUntil) > now)
+  const paid = legacyActive || Object.values(examAccess).some((expiry) => Date.parse(expiry) > now)
+  return {
+    paid, accessUntil: generalAccessUntil || null, examAccess,
+    selectedExam: account?.selectedExam || null,
+    subjectSelectionEnabled: Boolean(account?.subjectSelectionEnabled),
+    selectedSubjects,
+  }
+}
+
+function hasPrepExamAccess(user, exam, at = Date.now()) {
+  if (!['JAMB', 'WAEC', 'NECO'].includes(exam)) return false
+  if (user.accessUntil && Date.parse(user.accessUntil) > at) return true
+  const expiry = user.examAccess?.[exam]
+  return Boolean(expiry && Date.parse(expiry) > at)
+}
+
+function prepSubjectsForExam(exam) {
+  return rows('SELECT subject FROM prep_questions WHERE active = 1 AND exam = ? GROUP BY subject COLLATE NOCASE ORDER BY subject COLLATE NOCASE', [exam]).map((item) => item.subject)
+}
+
+function hasPrepSubjectAccess(user, exam, subject) {
+  if (!user.subjectSelectionEnabled) return true
+  return (user.selectedSubjects?.[exam] || []).some((selected) => selected.toLocaleLowerCase() === subject.toLocaleLowerCase())
+}
+
+function addCalendarMonth(date) {
+  const year = date.getUTCFullYear()
+  const month = date.getUTCMonth()
+  const day = date.getUTCDate()
+  const nextMonth = new Date(Date.UTC(year, month + 1, 1, date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds(), date.getUTCMilliseconds()))
+  const lastDay = new Date(Date.UTC(nextMonth.getUTCFullYear(), nextMonth.getUTCMonth() + 1, 0)).getUTCDate()
+  nextMonth.setUTCDate(Math.min(day, lastDay))
+  return nextMonth
+}
+
 // Safe to call many times for one payment: credits are added only once per reference.
 function fulfilPayment(reference, paidAmountKobo) {
   const payment = rows('SELECT * FROM payments WHERE reference = ?', [reference]).at(0)
@@ -250,12 +346,54 @@ function fulfilPayment(reference, paidAmountKobo) {
   return { ok: true, credits: payment.credits }
 }
 
+function fulfilPrepPayment(reference, paidAmountKobo, currency = 'NGN') {
+  const payment = rows('SELECT * FROM prep_payments WHERE reference = ?', [reference]).at(0)
+  if (!payment) return { ok: false, error: 'Unknown prep payment.' }
+  if (payment.status === 'success') {
+    const user = rows('SELECT access_until FROM prep_users WHERE id = ?', [payment.user_id]).at(0)
+    const examAccess = payment.exam ? rows('SELECT access_until AS accessUntil FROM prep_exam_access WHERE user_id = ? AND exam = ?', [payment.user_id, payment.exam]).at(0) : null
+    return { ok: true, already: true, exam: payment.exam || null, accessUntil: examAccess?.accessUntil || user?.access_until || null }
+  }
+  if (payment.status !== 'pending') return { ok: false, error: 'This prep payment is no longer pending.' }
+  if (currency !== 'NGN' || Number(paidAmountKobo) !== Number(payment.amount_kobo)) return { ok: false, error: 'The payment amount or currency does not match.' }
+  const paidAt = new Date().toISOString()
+  const user = rows('SELECT access_until FROM prep_users WHERE id = ?', [payment.user_id]).at(0)
+  if (!user) return { ok: false, error: 'The prep account for this payment no longer exists.' }
+  const previousAccess = payment.exam
+    ? rows('SELECT access_until FROM prep_exam_access WHERE user_id = ? AND exam = ?', [payment.user_id, payment.exam]).at(0)?.access_until
+    : user.access_until
+  const existingEnd = [previousAccess, user.access_until].filter(Boolean).map((value) => new Date(value)).sort((first, second) => second.getTime() - first.getTime())[0]
+  const extensionStart = existingEnd && existingEnd.getTime() > Date.now() ? existingEnd : new Date(paidAt)
+  const accessUntil = addCalendarMonth(extensionStart).toISOString()
+  db.run('BEGIN')
+  try {
+    db.run("UPDATE prep_payments SET status = 'success', paid_at = ? WHERE reference = ? AND status = 'pending'", [paidAt, reference])
+    if (db.getRowsModified() !== 1) {
+      db.run('ROLLBACK')
+      return { ok: false, error: 'This prep payment is no longer pending.' }
+    }
+    db.run('UPDATE prep_users SET paid_at = COALESCE(paid_at, ?) WHERE id = ?', [paidAt, payment.user_id])
+    if (payment.exam) {
+      db.run('INSERT INTO prep_exam_access (user_id, exam, access_until) VALUES (?, ?, ?) ON CONFLICT(user_id, exam) DO UPDATE SET access_until = excluded.access_until', [payment.user_id, payment.exam, accessUntil])
+    } else {
+      db.run('UPDATE prep_users SET access_until = ? WHERE id = ?', [accessUntil, payment.user_id])
+    }
+    recordPrepReferralCommission(payment, paidAt)
+    db.run('COMMIT')
+  } catch (error) {
+    try { db.run('ROLLBACK') } catch { /* transaction may already be closed */ }
+    throw error
+  }
+  persist()
+  return { ok: true, exam: payment.exam || null, accessUntil }
+}
+
 async function paystack(pathname, options = {}) {
   const result = await fetch(`https://api.paystack.co${pathname}`, {
     ...options,
     headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, 'Content-Type': 'application/json' }
   })
-  return result.json()
+  return { ...(await result.json()), _httpStatus: result.status }
 }
 
 /* ---------- AI question helper ---------- */
@@ -333,7 +471,7 @@ function putSetting(schoolId, name, value) {
 }
 
 function dropSettings(schoolId) {
-  for (const name of ['online_token', 'online_slug', 'online_school_id', 'last_push', 'server_cursor', 'last_sync_done']) run('DELETE FROM settings WHERE key = ?', [`${schoolId}:${name}`])
+  for (const name of ['online_token', 'online_slug', 'online_school_id', 'online_credit_price_kobo', 'last_push', 'server_cursor', 'last_sync_done']) run('DELETE FROM settings WHERE key = ?', [`${schoolId}:${name}`])
 }
 
 function createSession(userId) {
@@ -536,30 +674,61 @@ app.post('/api/change-password', authenticate, requireRole('Admin', 'Teacher'), 
 app.get('/api/data', authenticate, (request, response) => {
   const schoolId = request.user.schoolId
   const isStudent = request.user.role === 'Student'
+  if (request.user.role === 'Teacher') {
+    const teachers = rows("SELECT id FROM users WHERE school_id = ? AND role = 'Teacher' AND deleted = 0", [schoolId])
+    if (teachers.length === 1 && teachers[0].id === request.user.id) {
+      run('UPDATE subject_settings SET submitted_by = ? WHERE school_id = ? AND submitted_by IS NULL', [request.user.id, schoolId])
+    }
+  }
   const users = request.user.role === 'Admin'
     ? rows('SELECT * FROM users WHERE school_id = ? AND deleted = 0 AND role != \'Admin\' ORDER BY name', [schoolId]).map(publicUser)
     : []
-  const subjects = rows('SELECT subject, duration, approved, approved_at FROM subject_settings WHERE school_id = ? ORDER BY subject', [schoolId])
+  const subjects = request.user.role === 'Teacher'
+    ? rows('SELECT subject, duration, approved, approved_at, status, rejection_reason, review_comment, submitted_by FROM subject_settings WHERE school_id = ? AND submitted_by = ? ORDER BY subject', [schoolId, request.user.id])
+    : rows("SELECT subject, duration, approved, approved_at, status, rejection_reason, review_comment, submitted_by FROM subject_settings WHERE school_id = ? AND status != 'rejected' ORDER BY subject", [schoolId])
+  const teacherSubjects = request.user.role === 'Teacher'
+    ? rows('SELECT subject, duration, approved, approved_at, status, rejection_reason, review_comment, submitted_by FROM subject_settings WHERE school_id = ? AND (submitted_by = ? OR submitted_by IS NULL) ORDER BY subject', [schoolId, request.user.id]).map((subject) => ({
+      ...subject,
+      canEdit: subject.submitted_by === request.user.id,
+      questions: subject.submitted_by === request.user.id
+        ? rows('SELECT id, exam_id AS examId, subject, text, options, answer FROM questions WHERE school_id = ? AND subject = ? ORDER BY created_at', [schoolId, subject.subject]).map((question) => publicQuestion(question, true))
+        : []
+    }))
+    : []
   const allExams = rows(
     `SELECT exams.id, exams.title, exams.subject, exams.date, exams.time, exams.duration, exams.questions, exams.status, exams.class_section AS classSection,
       COALESCE(subject_settings.duration, 30) AS subject_duration,
       COALESCE(subject_settings.approved, 0) AS subject_approved,
-      (SELECT COUNT(*) FROM submissions WHERE submissions.exam_id = exams.id AND submissions.student_id = ?) AS taken
+      (SELECT COUNT(*) FROM submissions WHERE submissions.exam_id = exams.id AND submissions.student_id = ?) AS taken,
+      (SELECT started_at FROM exam_starts WHERE exam_starts.exam_id = exams.id AND exam_starts.student_id = ?) AS started_at
      FROM exams LEFT JOIN subject_settings ON subject_settings.subject = exams.subject AND subject_settings.school_id = exams.school_id
      WHERE exams.school_id = ? ORDER BY exams.date, exams.time`,
-    [request.user.id, schoolId]
+    [request.user.id, request.user.id, schoolId]
   )
   const myClass = isStudent ? studentClassOf(request.user.id) : ''
   const exams = isStudent ? allExams.filter((exam) => classMatches(exam.classSection, myClass) && (exam.taken || (exam.status === 'Scheduled' && scheduledExamHasTime(exam)))) : allExams // students only see their class and exams that have not expired
   const questionSql = isStudent
     ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? ORDER BY questions.created_at'
-    : 'SELECT id, exam_id, subject, text, options, answer FROM questions WHERE school_id = ? ORDER BY created_at'
-  const questions = rows(questionSql, [schoolId]).map((question) => publicQuestion(question, !isStudent))
+    : request.user.role === 'Admin'
+      ? "SELECT id, exam_id, subject, text, options, answer, created_at FROM questions WHERE school_id = ? AND NOT EXISTS (SELECT 1 FROM subject_settings WHERE subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject AND subject_settings.status = 'rejected') ORDER BY created_at"
+      : request.user.role === 'Teacher'
+        ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer, questions.created_at FROM questions JOIN subject_settings ON subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject WHERE questions.school_id = ? AND subject_settings.submitted_by = ? ORDER BY questions.created_at'
+        : 'SELECT id, exam_id, subject, text, options, answer, created_at FROM questions WHERE school_id = ? ORDER BY created_at'
+  const questions = rows(questionSql, request.user.role === 'Teacher' ? [schoolId, request.user.id] : [schoolId]).map((question) => publicQuestion(question, !isStudent))
   const results = request.user.role === 'Admin'
     ? rows('SELECT submissions.id, submissions.score, submissions.total, submissions.time_spent, submissions.submitted_at, exams.title AS exam_title, exams.subject AS subject, exams.date AS exam_date, exams.time AS exam_time, users.name AS student_name, users.student_id, users.class_section FROM submissions JOIN exams ON exams.id = submissions.exam_id JOIN users ON users.id = submissions.student_id WHERE submissions.school_id = ? ORDER BY submissions.submitted_at DESC', [schoolId])
     : []
   const balance = creditBalance(schoolId)
-  response.json({ users, exams, questions, results, subjects, offline: OFFLINE, examsOpen: balance > 0, ...(request.user.role === 'Admin' ? { credits: balance } : {}), ...(request.user.role === 'Teacher' ? { aiReady: !OFFLINE && Boolean(ANTHROPIC_KEY), aiRemaining: aiRemaining(request.user) } : {}) })
+  const savedBrandColor = getSetting(schoolId, 'brand_color')
+  const brandColor = /^#[\da-f]{6}$/i.test(savedBrandColor) ? savedBrandColor.toLowerCase() : '#216445'
+  response.json({ users, exams, questions, results, subjects, teacherSubjects, brandColor, offline: OFFLINE, examsOpen: balance > 0, ...(request.user.role === 'Admin' ? { credits: balance } : {}), ...(request.user.role === 'Teacher' ? { aiReady: !OFFLINE && Boolean(ANTHROPIC_KEY), aiRemaining: aiRemaining(request.user) } : {}) })
+})
+
+app.put('/api/school/appearance', authenticate, requireRole('Admin'), (request, response) => {
+  const color = typeof request.body?.color === 'string' ? request.body.color.trim().toLowerCase() : ''
+  if (!/^#[\da-f]{6}$/.test(color)) return response.status(400).json({ error: 'Choose a valid six-digit hex color.' })
+  putSetting(request.user.schoolId, 'brand_color', color)
+  response.json({ brandColor: color })
 })
 
 app.post('/api/users', authenticate, requireRole('Admin'), (request, response) => {
@@ -577,6 +746,44 @@ app.post('/api/users', authenticate, requireRole('Admin'), (request, response) =
   response.status(201).json({ user: publicUser(rows('SELECT * FROM users WHERE id = ?', [id])[0]) })
 })
 
+app.put('/api/users/:id', authenticate, requireRole('Admin'), (request, response) => {
+  const account = rows('SELECT * FROM users WHERE id = ? AND school_id = ? AND role != \'Admin\' AND deleted = 0', [request.params.id, request.user.schoolId]).at(0)
+  if (!account) return response.status(404).json({ error: 'User not found.' })
+
+  const { name = '', username = '', password = '', studentId = '', classSection = '' } = request.body || {}
+  const cleanName = String(name).trim()
+  if (!cleanName || cleanName.length > 120) return response.status(400).json({ error: 'Enter a name up to 120 characters.' })
+
+  let cleanUsername = null
+  let cleanStudentId = null
+  let cleanClassSection = null
+  let passwordHash = account.password_hash
+  if (account.role === 'Teacher') {
+    cleanUsername = String(username).trim()
+    if (!cleanUsername || cleanUsername.length > 80) return response.status(400).json({ error: 'Enter a username up to 80 characters.' })
+    if (password && String(password).length < 6) return response.status(400).json({ error: 'A new password must be at least 6 characters.' })
+    const duplicate = rows('SELECT id FROM users WHERE lower(username) = lower(?) AND id != ? AND deleted = 0', [cleanUsername, account.id])
+    if (duplicate.length) return response.status(409).json({ error: 'That username is already in use.' })
+    if (password) passwordHash = hashPassword(String(password))
+  } else {
+    cleanStudentId = String(studentId).trim().toUpperCase()
+    cleanClassSection = String(classSection).trim()
+    if (!cleanStudentId || cleanStudentId.length > 80 || !cleanClassSection || cleanClassSection.length > 100) {
+      return response.status(400).json({ error: 'Enter a student ID and class section.' })
+    }
+    const duplicate = rows('SELECT id FROM users WHERE school_id = ? AND lower(student_id) = lower(?) AND id != ? AND deleted = 0', [request.user.schoolId, cleanStudentId, account.id])
+    if (duplicate.length) return response.status(409).json({ error: 'That Student ID is already registered.' })
+  }
+
+  const teacherCredentialsChanged = account.role === 'Teacher' &&
+    (cleanUsername.toLowerCase() !== String(account.username || '').toLowerCase() || Boolean(password))
+  run('UPDATE users SET name = ?, username = ?, password_hash = ?, student_id = ?, class_section = ? WHERE id = ? AND school_id = ?', [
+    cleanName, cleanUsername, passwordHash, cleanStudentId, cleanClassSection, account.id, request.user.schoolId
+  ])
+  if (teacherCredentialsChanged) run('DELETE FROM sessions WHERE user_id = ?', [account.id])
+  response.json({ user: publicUser(rows('SELECT * FROM users WHERE id = ?', [account.id])[0]) })
+})
+
 app.delete('/api/users/:id', authenticate, requireRole('Admin'), (request, response) => {
   const target = rows('SELECT id FROM users WHERE id = ? AND school_id = ? AND role != \'Admin\' AND deleted = 0', [request.params.id, request.user.schoolId]).at(0)
   if (!target) return response.status(404).json({ error: 'User not found.' })
@@ -588,6 +795,51 @@ app.delete('/api/users/:id', authenticate, requireRole('Admin'), (request, respo
 app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) => {
   const { title, subject, date, time, duration, questions, classSection = '' } = request.body || {}
   if (!title || !subject || !date || !time) return response.status(400).json({ error: 'Title, subject, date, and time are required.' })
+  const selectedQuestionIds = request.body?.selectedQuestionIds
+  if (selectedQuestionIds !== undefined) {
+    const parsedDate = new Date(`${date}T00:00:00.000Z`)
+    const durationMinutes = Number(duration)
+    if (!Array.isArray(selectedQuestionIds) || selectedQuestionIds.length < 1 || selectedQuestionIds.length > 500 ||
+      selectedQuestionIds.some((id) => typeof id !== 'string' || !id) || new Set(selectedQuestionIds).size !== selectedQuestionIds.length) {
+      return response.status(400).json({ error: 'Select between 1 and 500 unique archived questions.' })
+    }
+    if (String(title).trim().length > 160 || String(subject).trim().length > 100 ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date ||
+      !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(time)) || !Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 1440) {
+      return response.status(400).json({ error: 'Enter a valid exam title, subject, future date, start time, and duration from 1 to 1440 minutes.' })
+    }
+    if (date <= new Date().toISOString().slice(0, 10)) return response.status(400).json({ error: 'Choose a future date for the archived-question exam.' })
+    const sourceQuestions = rows(
+      `SELECT id, subject, text, options, answer FROM questions WHERE school_id = ? AND id IN (${selectedQuestionIds.map(() => '?').join(',')})`,
+      [request.user.schoolId, ...selectedQuestionIds]
+    )
+    if (sourceQuestions.length !== selectedQuestionIds.length) return response.status(400).json({ error: 'One or more selected questions are no longer available.' })
+    if (sourceQuestions.some((question) => question.subject.toLowerCase() !== String(subject).trim().toLowerCase())) {
+      return response.status(400).json({ error: 'All selected questions must belong to the scheduled exam subject.' })
+    }
+
+    const id = crypto.randomUUID()
+    const now = Date.now()
+    try {
+      db.run('BEGIN')
+      db.run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?)', [
+        id, request.user.schoolId, String(title).trim(), String(subject).trim(), String(date), String(time),
+        durationMinutes, sourceQuestions.length, String(classSection || '').trim().slice(0, 200)
+      ])
+      for (const question of sourceQuestions) {
+        db.run('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
+          crypto.randomUUID(), request.user.schoolId, id, question.subject, question.text, question.options, question.answer, now
+        ])
+      }
+      db.run('COMMIT')
+      persist()
+    } catch (error) {
+      try { db.run('ROLLBACK') } catch { /* transaction may already be closed */ }
+      throw error
+    }
+    response.status(201).json({ exam: rows('SELECT * FROM exams WHERE id = ?', [id])[0], questions: sourceQuestions.length })
+    return
+  }
   const id = crypto.randomUUID()
   run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?)', [id, request.user.schoolId, title, subject, date, time, Number(duration) || 90, Number(questions) || 0, String(classSection || '').trim().slice(0, 200)])
   response.status(201).json({ exam: rows('SELECT * FROM exams WHERE id = ?', [id])[0] })
@@ -649,16 +901,128 @@ app.post('/api/subjects', authenticate, requireRole('Teacher'), (request, respon
   const minutes = Number(duration)
   const name = String(subject || '').trim()
   if (!name || !Number.isInteger(minutes) || minutes < 1 || minutes > 30) return response.status(400).json({ error: 'Enter a subject name and a time between 1 and 30 minutes.' })
-  run('INSERT INTO subject_settings (school_id, subject, duration, approved, approved_at) VALUES (?, ?, ?, 0, NULL) ON CONFLICT(school_id, subject) DO UPDATE SET duration = excluded.duration, approved = 0, approved_at = NULL', [request.user.schoolId, name, minutes])
-  response.status(201).json({ subject: name, duration: minutes, approved: 0 })
+  const existing = rows('SELECT submitted_by FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, name]).at(0)
+  if (existing && existing.submitted_by && existing.submitted_by !== request.user.id) return response.status(409).json({ error: 'Another teacher owns this subject question set.' })
+  if (existing && !existing.submitted_by && rows('SELECT id FROM questions WHERE school_id = ? AND subject = ?', [request.user.schoolId, name]).length) {
+    return response.status(409).json({ error: 'Claim this existing subject question set before adding questions.' })
+  }
+  run(`INSERT INTO subject_settings (school_id, subject, duration, approved, approved_at, status, rejection_reason, review_comment, submitted_by)
+    VALUES (?, ?, ?, 0, NULL, 'pending', NULL, NULL, ?)
+    ON CONFLICT(school_id, subject) DO UPDATE SET duration = excluded.duration, approved = 0, approved_at = NULL, status = 'pending', rejection_reason = NULL, review_comment = NULL, submitted_by = excluded.submitted_by`,
+    [request.user.schoolId, name, minutes, request.user.id])
+  response.status(201).json({ subject: name, duration: minutes, approved: 0, status: 'pending' })
 })
 
 app.post('/api/subjects/:subject/approve', authenticate, requireRole('Admin'), (request, response) => {
   const subject = decodeURIComponent(request.params.subject)
   const existing = rows('SELECT subject FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, subject]).at(0)
   if (!existing) return response.status(404).json({ error: 'Subject settings not found.' })
-  run('UPDATE subject_settings SET approved = 1, approved_at = ? WHERE school_id = ? AND subject = ?', [new Date().toISOString(), request.user.schoolId, subject])
-  response.json({ subject, approved: 1 })
+  const comment = String(request.body?.comment || '').trim().slice(0, 500)
+  const approvedAt = new Date().toISOString()
+  run("UPDATE subject_settings SET approved = 1, approved_at = ?, status = 'approved', rejection_reason = NULL, review_comment = ? WHERE school_id = ? AND subject = ?", [approvedAt, comment || null, request.user.schoolId, subject])
+  response.json({ subject, approved: 1, status: 'approved', approved_at: approvedAt, review_comment: comment || null })
+})
+
+app.put('/api/subjects/:subject/name', authenticate, requireRole('Admin'), (request, response) => {
+  const subject = decodeURIComponent(request.params.subject)
+  const name = typeof request.body?.name === 'string' ? request.body.name.trim() : ''
+  if (!name || name.length > 100) return response.status(400).json({ error: 'Enter a subject name of up to 100 characters.' })
+  const schoolId = request.user.schoolId
+  const existing = rows('SELECT subject, submitted_by FROM subject_settings WHERE school_id = ? AND subject = ?', [schoolId, subject]).at(0)
+  if (!existing) return response.status(404).json({ error: 'Subject settings not found.' })
+  if (name === subject) return response.json({ subject: name })
+  if (rows('SELECT subject FROM subject_settings WHERE school_id = ? AND lower(subject) = lower(?)', [schoolId, name]).length) {
+    return response.status(409).json({ error: 'A subject with that name already exists in this school.' })
+  }
+  if (rows(`SELECT id FROM question_drafts WHERE school_id = ? AND subject = ?
+    AND (user_id = ? OR user_id IN (SELECT user_id FROM question_drafts WHERE school_id = ? AND subject = ?))`,
+  [schoolId, name, existing.submitted_by || '', schoolId, subject]).length) {
+    return response.status(409).json({ error: 'A teacher already has an unsent draft with that name. Ask the teacher to rename or remove that draft first.' })
+  }
+
+  const updatedAt = new Date().toISOString()
+  const drafts = rows('SELECT user_id FROM question_drafts WHERE school_id = ? AND subject = ?', [schoolId, subject])
+  try {
+    db.run('BEGIN')
+    db.run('UPDATE subject_settings SET subject = ?, updated_at = ? WHERE school_id = ? AND subject = ?', [name, updatedAt, schoolId, subject])
+    db.run('UPDATE questions SET subject = ?, updated_at = ? WHERE school_id = ? AND subject = ?', [name, updatedAt, schoolId, subject])
+    db.run('UPDATE exams SET subject = ?, updated_at = ? WHERE school_id = ? AND subject = ?', [name, updatedAt, schoolId, subject])
+    db.run('UPDATE question_drafts SET subject = ?, updated_at = ? WHERE school_id = ? AND subject = ?', [name, updatedAt, schoolId, subject])
+    db.run('INSERT INTO tombstones (school_id, kind, key, deleted_at) VALUES (?, ?, ?, ?) ON CONFLICT(school_id, kind, key) DO UPDATE SET deleted_at = excluded.deleted_at', [schoolId, 'subject', subject, updatedAt])
+    for (const draft of drafts) {
+      db.run('INSERT INTO tombstones (school_id, kind, key, deleted_at) VALUES (?, ?, ?, ?) ON CONFLICT(school_id, kind, key) DO UPDATE SET deleted_at = excluded.deleted_at', [schoolId, 'draft', `${draft.user_id}|${subject}`, updatedAt])
+    }
+    db.run('COMMIT')
+    persist()
+  } catch (error) {
+    db.run('ROLLBACK')
+    console.error('Could not rename subject.', error)
+    return response.status(500).json({ error: 'The subject could not be renamed. No changes were saved.' })
+  }
+  response.json({ subject: name })
+})
+
+app.post('/api/subjects/:subject/reject', authenticate, requireRole('Admin'), (request, response) => {
+  const subject = decodeURIComponent(request.params.subject)
+  const reason = String(request.body?.reason || '').trim().slice(0, 500)
+  if (!reason) return response.status(400).json({ error: 'Add a reason so the teacher knows what to correct.' })
+  if (!rows('SELECT subject FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, subject]).length) return response.status(404).json({ error: 'Subject settings not found.' })
+  run("UPDATE subject_settings SET approved = 0, approved_at = NULL, status = 'rejected', rejection_reason = ?, review_comment = ? WHERE school_id = ? AND subject = ?", [reason, reason, request.user.schoolId, subject])
+  response.json({ subject, status: 'rejected', rejection_reason: reason })
+})
+
+app.put('/api/teacher/questions/:id', authenticate, requireRole('Teacher'), (request, response) => {
+  const questionId = String(request.params.id)
+  const { text, options, answer } = request.body || {}
+  if (!String(text || '').trim() || String(text).length > 2000 || !Array.isArray(options) || options.length !== 4 || options.some((option) => !String(option || '').trim() || String(option).length > 300) || !Number.isInteger(Number(answer)) || Number(answer) < 0 || Number(answer) > 3) {
+    return response.status(400).json({ error: 'Enter the question, all four options, and a valid correct answer.' })
+  }
+  const question = rows(`SELECT questions.id, questions.subject FROM questions
+    JOIN subject_settings ON subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject
+    WHERE questions.id = ? AND questions.school_id = ? AND subject_settings.submitted_by = ?`, [questionId, request.user.schoolId, request.user.id]).at(0)
+  if (!question) return response.status(404).json({ error: 'Question not found in your submitted subjects.' })
+  run('UPDATE questions SET text = ?, options = ?, answer = ? WHERE id = ? AND school_id = ?', [String(text).trim(), JSON.stringify(options.map((option) => String(option).trim())), Number(answer), questionId, request.user.schoolId])
+  run("UPDATE subject_settings SET approved = 0, approved_at = NULL, status = CASE WHEN status = 'approved' THEN 'pending' ELSE status END WHERE school_id = ? AND subject = ?", [request.user.schoolId, question.subject])
+  response.json({ message: 'Question updated.' })
+})
+
+app.delete('/api/teacher/questions/:id', authenticate, requireRole('Teacher'), (request, response) => {
+  const questionId = String(request.params.id)
+  const question = rows(`SELECT questions.id, questions.subject, subject_settings.approved
+    FROM questions JOIN subject_settings
+      ON subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject
+    WHERE questions.id = ? AND questions.school_id = ? AND subject_settings.submitted_by = ?`,
+  [questionId, request.user.schoolId, request.user.id]).at(0)
+  if (!question) return response.status(404).json({ error: 'Question not found in your submitted subjects.' })
+  run('DELETE FROM questions WHERE id = ? AND school_id = ?', [questionId, request.user.schoolId])
+  if (question.approved) run("UPDATE subject_settings SET approved = 0, approved_at = NULL, status = 'pending', review_comment = NULL WHERE school_id = ? AND subject = ?", [request.user.schoolId, question.subject])
+  sync.recordTombstone(request.user.schoolId, 'question', questionId)
+  response.sendStatus(204)
+})
+
+app.post('/api/subjects/:subject/resubmit', authenticate, requireRole('Teacher'), (request, response) => {
+  const subject = decodeURIComponent(request.params.subject)
+  const existing = rows('SELECT submitted_by FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, subject]).at(0)
+  if (!existing) return response.status(404).json({ error: 'Submitted subject not found.' })
+  if (existing.submitted_by && existing.submitted_by !== request.user.id) return response.status(409).json({ error: 'This subject is already assigned to another teacher.' })
+  if (!existing.submitted_by) {
+    run('UPDATE subject_settings SET submitted_by = ? WHERE school_id = ? AND subject = ?', [request.user.id, request.user.schoolId, subject])
+  }
+  if (!rows('SELECT id FROM questions WHERE school_id = ? AND subject = ?', [request.user.schoolId, subject]).length) return response.status(400).json({ error: 'Add at least one question before resubmitting.' })
+  run("UPDATE subject_settings SET approved = 0, approved_at = NULL, status = 'pending', rejection_reason = NULL, review_comment = NULL, submitted_by = ? WHERE school_id = ? AND subject = ?", [request.user.id, request.user.schoolId, subject])
+  response.json({ subject, status: 'pending' })
+})
+
+app.post('/api/subjects/:subject/claim-returned', authenticate, requireRole('Teacher'), (request, response) => {
+  const subject = decodeURIComponent(request.params.subject)
+  run('UPDATE subject_settings SET submitted_by = ? WHERE school_id = ? AND subject = ? AND submitted_by IS NULL', [request.user.id, request.user.schoolId, subject])
+  const claimed = rows('SELECT submitted_by, status FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, subject]).at(0)
+  if (claimed?.submitted_by !== request.user.id) {
+    const existing = rows('SELECT submitted_by, status FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, subject]).at(0)
+    if (existing?.submitted_by === request.user.id) return response.json({ subject, claimed: true })
+    return response.status(409).json({ error: 'This subject has already been claimed or is no longer available.' })
+  }
+  response.json({ subject, claimed: true })
 })
 
 app.delete('/api/subjects/:subject', authenticate, requireRole('Admin'), (request, response) => {
@@ -673,27 +1037,71 @@ app.delete('/api/subjects/:subject', authenticate, requireRole('Admin'), (reques
 app.post('/api/questions', authenticate, requireRole('Teacher'), (request, response) => {
   const { subject, text, options, answer, examId = null } = request.body || {}
   if (!subject || !text || !Array.isArray(options) || options.length !== 4) return response.status(400).json({ error: 'Subject, question text, and four options are required.' })
+  const subjectName = String(subject).trim()
+  const setting = rows('SELECT submitted_by, approved FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, subjectName]).at(0)
+  if (!setting || setting.submitted_by !== request.user.id) return response.status(403).json({ error: 'Create or claim your subject question set before adding questions.' })
+  if (setting?.approved) run("UPDATE subject_settings SET approved = 0, approved_at = NULL, status = 'pending', review_comment = NULL WHERE school_id = ? AND subject = ?", [request.user.schoolId, subjectName])
   const id = crypto.randomUUID()
-  run('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, request.user.schoolId, examId, String(subject).trim(), text, JSON.stringify(options), Number(answer), Date.now()])
+  run('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, request.user.schoolId, examId, subjectName, text, JSON.stringify(options), Number(answer), Date.now()])
   response.status(201).json({ question: publicQuestion(rows('SELECT * FROM questions WHERE id = ?', [id])[0], true) })
+})
+
+const OPEN_EXAM_SQL = 'SELECT exams.* FROM exams JOIN subject_settings ON subject_settings.subject = exams.subject AND subject_settings.school_id = exams.school_id AND subject_settings.approved = 1 WHERE exams.id = ? AND exams.school_id = ? AND exams.status = \'Scheduled\''
+
+function examDurationMinutes(schoolId, exam) {
+  const subjectDuration = rows('SELECT duration FROM subject_settings WHERE school_id = ? AND subject = ? AND approved = 1', [schoolId, exam.subject]).at(0)?.duration
+  return Number(subjectDuration) > 0 ? Number(subjectDuration) : Number(exam.duration)
+}
+
+// The student presses "start": the server saves that moment, so the full timer always runs from it (and a refresh cannot reset it).
+app.post('/api/exams/:id/start', authenticate, requireRole('Student'), (request, response) => {
+  const schoolId = request.user.schoolId
+  const examId = request.params.id
+  const exam = rows(OPEN_EXAM_SQL, [examId, schoolId]).at(0)
+  if (!exam) return response.status(404).json({ error: 'Exam is not available.' })
+  if (!classMatches(exam.class_section, studentClassOf(request.user.id))) return response.status(403).json({ error: 'This exam is not for your class.' })
+  const duration = examDurationMinutes(schoolId, exam)
+  const startsAt = scheduledExamStart(exam)
+  const dayEnd = scheduledExamDayEnd(exam)
+  const now = Date.now()
+  if (!Number.isFinite(startsAt) || !Number.isFinite(dayEnd) || !Number.isFinite(duration) || duration <= 0) return response.status(403).json({ error: 'This exam is not available.' })
+  if (now < startsAt) return response.status(403).json({ error: `This exam starts at ${exam.time}.` })
+  if (rows('SELECT id FROM submissions WHERE exam_id = ? AND student_id = ?', [examId, request.user.id]).length) return response.status(409).json({ error: 'You have already submitted this exam.' })
+  let startedAt = Number(rows('SELECT started_at FROM exam_starts WHERE exam_id = ? AND student_id = ?', [examId, request.user.id]).at(0)?.started_at)
+  if (!Number.isFinite(startedAt)) {
+    if (now >= dayEnd) return response.status(403).json({ error: 'The scheduled day for this exam has ended.' })
+    startedAt = now
+    run('INSERT INTO exam_starts (exam_id, student_id, school_id, started_at) VALUES (?, ?, ?, ?) ON CONFLICT(exam_id, student_id) DO NOTHING', [examId, request.user.id, schoolId, startedAt])
+  }
+  const endsAt = startedAt + duration * 60000
+  response.json({ startedAt, endsAt, serverNow: now, expired: now > endsAt + SUBMIT_GRACE_MS })
 })
 
 app.post('/api/submissions', authenticate, requireRole('Student'), (request, response) => {
   const { examId, answers = {}, timeSpent } = request.body || {}
   const schoolId = request.user.schoolId
-  const exam = rows('SELECT exams.* FROM exams JOIN subject_settings ON subject_settings.subject = exams.subject AND subject_settings.school_id = exams.school_id AND subject_settings.approved = 1 WHERE exams.id = ? AND exams.school_id = ? AND exams.status = \'Scheduled\'', [examId, schoolId]).at(0)
+  const exam = rows(OPEN_EXAM_SQL, [examId, schoolId]).at(0)
   if (!exam) return response.status(404).json({ error: 'Exam is not available.' })
   if (!classMatches(exam.class_section, studentClassOf(request.user.id))) return response.status(403).json({ error: 'This exam is not for your class.' })
-  const subjectDuration = rows('SELECT duration FROM subject_settings WHERE school_id = ? AND subject = ? AND approved = 1', [schoolId, exam.subject]).at(0)?.duration
   const startsAt = scheduledExamStart(exam)
-  const duration = Number(subjectDuration) > 0 ? Number(subjectDuration) : Number(exam.duration)
+  const dayEnd = scheduledExamDayEnd(exam)
+  const duration = examDurationMinutes(schoolId, exam)
   const now = Date.now()
   if (!Number.isFinite(startsAt) || !Number.isFinite(duration) || duration <= 0 || now < startsAt) return response.status(403).json({ error: 'This exam has not started yet.' })
   if (rows('SELECT id FROM submissions WHERE exam_id = ? AND student_id = ?', [examId, request.user.id]).length) return response.status(409).json({ error: 'You have already submitted this exam.' })
+  const startedAt = Number(rows('SELECT started_at FROM exam_starts WHERE exam_id = ? AND student_id = ?', [examId, request.user.id]).at(0)?.started_at)
+  const hasStart = Number.isFinite(startedAt)
+  if (!hasStart && !(now < dayEnd)) return response.status(403).json({ error: 'The scheduled day for this exam has ended.' })
+  // Answers sent long after the student's own timer ended (beyond a 2-minute allowance) are not counted.
+  const tooLate = hasStart && now > startedAt + duration * 60000 + SUBMIT_GRACE_MS
+  const givenAnswers = tooLate ? {} : answers
   const examQuestions = rows('SELECT questions.id, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? AND (questions.exam_id = ? OR (questions.exam_id IS NULL AND questions.subject = ?))', [schoolId, examId, exam.subject])
   const total = examQuestions.length
-  const score = examQuestions.reduce((sum, question) => sum + (Number(answers[question.id]) === Number(question.answer) ? 1 : 0), 0)
-  const spent = Number.isFinite(Number(timeSpent)) && timeSpent !== null && timeSpent !== '' ? Math.max(0, Math.min(Math.round(Number(timeSpent)), (Number(exam.duration) || 90) * 60 + 300)) : null // seconds the student spent, never more than the exam length plus a little
+  const score = examQuestions.reduce((sum, question) => sum + (Number(givenAnswers[question.id]) === Number(question.answer) ? 1 : 0), 0)
+  const maxSeconds = duration * 60 + 120
+  const spent = hasStart
+    ? Math.max(0, Math.min(Math.round((now - startedAt) / 1000), maxSeconds)) // measured by the server from the saved start time
+    : (Number.isFinite(Number(timeSpent)) && timeSpent !== null && timeSpent !== '' ? Math.max(0, Math.min(Math.round(Number(timeSpent)), maxSeconds)) : null)
   run('INSERT INTO submissions (id, school_id, exam_id, student_id, score, total, time_spent, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), schoolId, examId, request.user.id, score, total, spent, new Date().toISOString()])
   scheduleQuickSync(schoolId)
   addCredits(schoolId, -1, 'Exam attempt', examId + ':' + request.user.id) // never blocks a finished exam; balance stops at 0
@@ -757,7 +1165,7 @@ app.get('/api/billing', authenticate, requireRole('Admin'), (request, response) 
   const schoolId = request.user.schoolId
   response.json({
     credits: creditBalance(schoolId),
-    pricePerCredit: CREDIT_PRICE_KOBO / 100,
+    pricePerCredit: currentCreditPriceKobo() / 100,
     minCredits: MIN_CREDITS,
     maxCredits: MAX_CREDITS,
     schoolId,
@@ -781,7 +1189,7 @@ app.post('/api/billing/checkout', authenticate, requireRole('Admin'), async (req
       school = { ...school, email }
     }
     const reference = 'TPE-' + crypto.randomBytes(10).toString('hex')
-    const amountKobo = credits * CREDIT_PRICE_KOBO
+    const amountKobo = credits * currentCreditPriceKobo()
     const origin = request.body?.returnUrl && /^https?:\/\//.test(String(request.body.returnUrl)) ? String(request.body.returnUrl) : `${request.protocol}://${request.get('host')}/${school.slug}`
     const result = await paystack('/transaction/initialize', {
       method: 'POST',
@@ -820,7 +1228,11 @@ app.post('/api/paystack/webhook', (request, response) => {
   const valid = PAYSTACK_SECRET && signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
   if (!valid) return response.sendStatus(401)
   const event = request.body || {}
-  if (event.event === 'charge.success' && event.data?.reference) fulfilPayment(event.data.reference, event.data.amount)
+  if (event.event === 'charge.success' && event.data?.reference) {
+    const prepPayment = rows('SELECT reference FROM prep_payments WHERE reference = ?', [event.data.reference]).at(0)
+    if (prepPayment) fulfilPrepPayment(event.data.reference, event.data.amount, event.data.currency)
+    else fulfilPayment(event.data.reference, event.data.amount)
+  }
   response.sendStatus(200)
 })
 
@@ -888,7 +1300,12 @@ app.post('/api/sync', authenticate, requireRole('Admin'), (request, response) =>
     const stats = sync.applyChanges(schoolId, request.body?.changes, skew, { ledger: 'usage-only' })
     const serverTime = new Date().toISOString()
     const changes = sync.collectChanges(schoolId, String(request.body?.serverCursor || ''))
-    response.json({ serverTime, changes, stats, school: rows('SELECT name, slug FROM schools WHERE id = ?', [schoolId]).at(0) })
+    response.json({
+      serverTime,
+      changes,
+      stats,
+      school: { ...rows('SELECT name, slug FROM schools WHERE id = ?', [schoolId]).at(0), creditPriceKobo: currentCreditPriceKobo() }
+    })
   } catch (error) {
     console.error('sync failed', error)
     response.status(500).json({ error: 'Could not sync right now.' })
@@ -908,9 +1325,14 @@ function offlineFailure(response, error, fallback) {
 
 app.get('/api/offline/status', authenticate, requireRole('Admin'), offlineOnly, (request, response) => {
   const schoolId = request.user.schoolId
+  const cachedOnlinePrice = getSetting(schoolId, 'online_credit_price_kobo')
+  const priceKobo = cachedOnlinePrice ? Number(cachedOnlinePrice) : DEFAULT_CREDIT_PRICE_KOBO
+  if (!Number.isSafeInteger(priceKobo) || priceKobo < 1 || priceKobo * MAX_CREDITS > Number.MAX_SAFE_INTEGER) {
+    throw new Error('The cached online credit price is invalid.')
+  }
   response.json({
     credits: creditBalance(schoolId),
-    pricePerCredit: CREDIT_PRICE_KOBO / 100,
+    pricePerCredit: priceKobo / 100,
     minCredits: MIN_CREDITS,
     maxCredits: MAX_CREDITS,
     linked: Boolean(getSetting(schoolId, 'online_token')),
@@ -932,9 +1354,12 @@ app.post('/api/offline/link', authenticate, requireRole('Admin'), offlineOnly, a
     if (!login.ok || !login.body?.token) return response.status(400).json({ error: login.body?.error || 'Could not sign in to the online account.' })
     const info = await onlineFetch('/api/billing', { headers: { Authorization: `Bearer ${login.body.token}` } })
     if (!info.ok || !info.body?.schoolId) return response.status(400).json({ error: 'That online account is not a school admin account.' })
+    const priceKobo = parseCreditPriceKobo(info.body.pricePerCredit)
+    if (priceKobo === null) return response.status(502).json({ error: 'The website returned an invalid credit price.' })
     putSetting(schoolId, 'online_token', login.body.token)
     putSetting(schoolId, 'online_slug', slug)
     putSetting(schoolId, 'online_school_id', info.body.schoolId)
+    putSetting(schoolId, 'online_credit_price_kobo', priceKobo)
     response.json({ ok: true })
   } catch (error) { offlineFailure(response, error, 'Could not link the online account.') }
 })
@@ -955,6 +1380,10 @@ async function syncSchool(schoolId) {
   const skew = Date.parse(result.body.serverTime) - Date.parse(started) // how far this computer's clock is behind the website's
   const stats = sync.applyChanges(schoolId, result.body.changes, -skew)
   const remote = result.body.school
+  const onlinePriceKobo = Number(remote?.creditPriceKobo)
+  if (Number.isSafeInteger(onlinePriceKobo) && onlinePriceKobo > 0 && onlinePriceKobo * MAX_CREDITS <= Number.MAX_SAFE_INTEGER) {
+    putSetting(schoolId, 'online_credit_price_kobo', onlinePriceKobo)
+  }
   if (remote?.slug) { // the creator renamed the school or its link: follow it, and keep the old link working here too
     const local = rows('SELECT slug, name FROM schools WHERE id = ?', [schoolId]).at(0)
     if (local && (local.slug !== remote.slug || local.name !== remote.name) && !rows('SELECT id FROM schools WHERE slug = ? AND id != ?', [remote.slug, schoolId]).length) {
@@ -1196,6 +1625,488 @@ function creatorAuth(request, response, next) {
   next()
 }
 
+function prepAuth(request, response, next) {
+  const token = String(request.headers.authorization || '').replace('Bearer ', '')
+  const session = token ? rows('SELECT user_id FROM prep_sessions WHERE token_hash = ? AND expires_at > ?', [hashToken(token), Date.now()]).at(0) : undefined
+  const user = session ? rows('SELECT id, name, username, paid_at AS paidAt, access_until AS accessUntil, selected_exam AS selectedExam, subject_selection_enabled AS subjectSelectionEnabled FROM prep_users WHERE id = ?', [session.user_id]).at(0) : undefined
+  if (!user) return response.status(401).json({ error: 'Your prep-platform session has expired. Please sign in again.' })
+  request.prepUser = { ...user, ...currentPrepAccess(user.id, user.accessUntil) }
+  request.prepToken = token
+  next()
+}
+
+function ambassadorAuth(request, response, next) {
+  const token = String(request.headers.authorization || '').replace('Bearer ', '')
+  const session = token ? rows('SELECT ambassador_id FROM prep_ambassador_sessions WHERE token_hash = ? AND expires_at > ?', [hashToken(token), Date.now()]).at(0) : undefined
+  const ambassador = session ? rows('SELECT id, name, username, referral_code AS referralCode FROM prep_ambassadors WHERE id = ? AND active = 1', [session.ambassador_id]).at(0) : undefined
+  if (!ambassador) return response.status(401).json({ error: 'Your ambassador session has expired. Please sign in again.' })
+  request.ambassador = ambassador
+  request.ambassadorToken = token
+  next()
+}
+
+function recordPrepReferralCommission(payment, paidAt) {
+  const commissionColumns = { JAMB: 'jamb_commission_kobo', WAEC: 'waec_commission_kobo', NECO: 'neco_commission_kobo' }
+  const commissionColumn = commissionColumns[payment.exam]
+  if (!commissionColumn) return
+  const referral = rows('SELECT ambassador_id FROM prep_users WHERE id = ?', [payment.user_id]).at(0)
+  if (!referral?.ambassador_id) return
+  const ambassador = rows(`SELECT ${commissionColumn} AS amount FROM prep_ambassadors WHERE id = ?`, [referral.ambassador_id]).at(0)
+  if (!ambassador) return
+  db.run(
+    'INSERT OR IGNORE INTO prep_referral_commissions (id, payment_reference, ambassador_id, prep_user_id, exam, amount_kobo, paid_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [crypto.randomUUID(), payment.reference, referral.ambassador_id, payment.user_id, payment.exam, ambassador.amount, paidAt],
+  )
+}
+
+function requirePrepPayment(request, response, next) {
+  if (!request.prepUser.paid) return response.status(402).json({ error: 'Pay for JAMB, WAEC, or NECO access to continue.' })
+  next()
+}
+
+function requirePrepExamPayment(request, response, next) {
+  const exam = String(request.body?.exam || '').toUpperCase()
+  if (!hasPrepExamAccess(request.prepUser, exam)) return response.status(402).json({ error: `Pay for ${exam || 'this exam'} access to continue.` })
+  next()
+}
+
+function requirePrepExamPaymentForSubmission(request, response, next) {
+  const practice = rows('SELECT exam, started_at FROM prep_practice_sessions WHERE id = ? AND user_id = ?', [request.params.id, request.prepUser.id]).at(0)
+  if (practice && hasPrepExamAccess(request.prepUser, practice.exam, Number(practice.started_at))) return next()
+  return response.status(402).json({ error: 'Renew access for this exam to continue.' })
+}
+
+app.get('/api/prep/subjects', (_request, response) => {
+  const exams = Object.fromEntries(['JAMB', 'WAEC', 'NECO'].map((exam) => [exam, prepSubjectsForExam(exam)]))
+  response.json({ exams })
+})
+
+app.post('/api/prep/register', (request, response) => {
+  if (OFFLINE) return response.status(404).json({ error: 'The prep platform is available on the hosted website.' })
+  const name = String(request.body?.name || '').trim()
+  const username = String(request.body?.username || '').trim()
+  const password = String(request.body?.password || '')
+  const rawPhone = String(request.body?.phone || '').trim()
+  const phoneDigits = rawPhone.replace(/\D/g, '')
+  const phone = rawPhone.startsWith('+') ? `+${phoneDigits}` : phoneDigits
+  const referralCode = String(request.body?.referralCode || '').trim().toUpperCase()
+  const selectedExam = String(request.body?.exam || '').trim().toUpperCase()
+  const requestedSubjects = request.body?.subjects
+  if (name.length < 2 || name.length > 100) return response.status(400).json({ error: 'Enter your name (2 to 100 characters).' })
+  if (!/^[a-zA-Z0-9._-]{3,30}$/.test(username)) return response.status(400).json({ error: 'Choose a username with 3 to 30 letters, numbers, dots, underscores, or hyphens.' })
+  if (password.length < 8 || password.length > 256) return response.status(400).json({ error: 'Your password must be between 8 and 256 characters.' })
+  if (!/^\+?[\d\s().-]{7,20}$/.test(rawPhone) || phoneDigits.length < 7 || phoneDigits.length > 15) return response.status(400).json({ error: 'Enter a valid phone number, including its country code if needed.' })
+  if (referralCode.length > 30) return response.status(400).json({ error: 'The referral link is invalid. Ask your ambassador for a current link.' })
+  if (!['JAMB', 'WAEC', 'NECO'].includes(selectedExam)) return response.status(400).json({ error: 'Choose JAMB, WAEC, or NECO.' })
+  if (!Array.isArray(requestedSubjects) || requestedSubjects.length !== 4 || requestedSubjects.some((subject) => typeof subject !== 'string')) {
+    return response.status(400).json({ error: 'Choose exactly four subjects for your exam.' })
+  }
+  const availableSubjects = prepSubjectsForExam(selectedExam)
+  const subjectsByName = new Map(availableSubjects.map((subject) => [subject.toLocaleLowerCase(), subject]))
+  const selectedSubjects = requestedSubjects.map((subject) => subjectsByName.get(subject.trim().toLocaleLowerCase()))
+  if (new Set(requestedSubjects.map((subject) => subject.trim().toLocaleLowerCase())).size !== 4 || selectedSubjects.some((subject) => !subject)) {
+    return response.status(400).json({ error: 'Choose four different subjects available for the selected exam.' })
+  }
+  const key = `prep-register|${request.ip}|${username.toLowerCase()}`
+  if (tooManyAttempts(key)) return response.status(429).json({ error: 'Too many registration attempts. Please wait a few minutes and try again.' })
+  if (rows('SELECT id FROM prep_users WHERE username = ? COLLATE NOCASE', [username]).length) return response.status(409).json({ error: 'That username is already in use. Choose another one.' })
+  const ambassador = referralCode ? rows(`SELECT a.id FROM prep_ambassadors a
+    LEFT JOIN prep_ambassador_referral_codes c ON c.ambassador_id = a.id
+    WHERE a.active = 1 AND (a.referral_code = ? OR c.code = ?) LIMIT 1`, [referralCode, referralCode]).at(0) : undefined
+  if (referralCode && !ambassador) return response.status(400).json({ error: 'This ambassador referral link is invalid or inactive. Ask for a current link.' })
+  const id = crypto.randomUUID()
+  const now = Date.now()
+  const token = crypto.randomBytes(32).toString('hex')
+  const createdAt = new Date(now).toISOString()
+  db.run('BEGIN')
+  try {
+    db.run('INSERT INTO prep_users (id, name, username, password_hash, created_at, phone, ambassador_id, selected_exam, subject_selection_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)', [id, name, username, hashPassword(password), createdAt, phone, ambassador?.id || null, selectedExam])
+    for (const subject of selectedSubjects) {
+      db.run('INSERT INTO prep_user_exam_subjects (user_id, exam, subject, added_at) VALUES (?, ?, ?, ?)', [id, selectedExam, subject, createdAt])
+    }
+    db.run('INSERT INTO prep_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [hashToken(token), id, now + SESSION_MS])
+    db.run('COMMIT')
+  } catch (error) {
+    db.run('ROLLBACK')
+    throw error
+  }
+  persist()
+  attempts.delete(key)
+  response.status(201).json({
+    token,
+    user: {
+      id, name, username, phone, paid: false, accessUntil: null, examAccess: {},
+      selectedExam, subjectSelectionEnabled: true, selectedSubjects: { [selectedExam]: selectedSubjects },
+    },
+  })
+})
+
+app.post('/api/prep/login', (request, response) => {
+  if (OFFLINE) return response.status(404).json({ error: 'The prep platform is available on the hosted website.' })
+  const username = String(request.body?.username || '').trim()
+  const password = String(request.body?.password || '')
+  if (!username || !password) return response.status(400).json({ error: 'Enter your username and password.' })
+  const key = `prep-login|${request.ip}|${username.toLowerCase()}`
+  if (tooManyAttempts(key)) return response.status(429).json({ error: 'Too many sign-in attempts. Please wait a few minutes and try again.' })
+  const user = rows('SELECT id, name, username, password_hash, access_until AS accessUntil FROM prep_users WHERE username = ? COLLATE NOCASE', [username]).at(0)
+  if (!user || !verifyPassword(password, user.password_hash)) {
+    recordFailure(key)
+    return response.status(401).json({ error: 'Username or password is incorrect.' })
+  }
+  attempts.delete(key)
+  const token = crypto.randomBytes(32).toString('hex')
+  run('INSERT INTO prep_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [hashToken(token), user.id, Date.now() + SESSION_MS])
+  const access = currentPrepAccess(user.id, user.accessUntil)
+  response.json({ token, user: { id: user.id, name: user.name, username: user.username, ...access } })
+})
+
+app.post('/api/prep/ambassador/login', (request, response) => {
+  if (OFFLINE) return response.status(404).json({ error: 'The Prep ambassador portal is available on the hosted website.' })
+  const username = String(request.body?.username || '').trim()
+  const password = String(request.body?.password || '')
+  if (!username || !password) return response.status(400).json({ error: 'Enter your username and password.' })
+  const key = `prep-ambassador-login|${request.ip}|${username.toLowerCase()}`
+  if (tooManyAttempts(key)) return response.status(429).json({ error: 'Too many sign-in attempts. Please wait a few minutes and try again.' })
+  const ambassador = rows('SELECT id, name, username, password_hash, referral_code AS referralCode FROM prep_ambassadors WHERE username = ? COLLATE NOCASE AND active = 1', [username]).at(0)
+  if (!ambassador || !verifyPassword(password, ambassador.password_hash)) {
+    recordFailure(key)
+    return response.status(401).json({ error: 'Username or password is incorrect.' })
+  }
+  attempts.delete(key)
+  const token = crypto.randomBytes(32).toString('hex')
+  run('INSERT INTO prep_ambassador_sessions (token_hash, ambassador_id, expires_at) VALUES (?, ?, ?)', [hashToken(token), ambassador.id, Date.now() + SESSION_MS])
+  response.json({ token, ambassador: { id: ambassador.id, name: ambassador.name, username: ambassador.username, referralCode: ambassador.referralCode } })
+})
+
+app.get('/api/prep/ambassador/dashboard', ambassadorAuth, (request, response) => {
+  const ambassadorId = request.ambassador.id
+  const ambassador = rows(`SELECT id, name, username, referral_code AS referralCode,
+    jamb_commission_kobo AS jambCommissionKobo,
+    waec_commission_kobo AS waecCommissionKobo,
+    neco_commission_kobo AS necoCommissionKobo
+    FROM prep_ambassadors WHERE id = ?`, [ambassadorId]).at(0)
+  const referrals = rows(`SELECT u.id, u.name, u.phone, u.created_at AS createdAt,
+    (SELECT GROUP_CONCAT(exam, ', ') FROM (
+      SELECT DISTINCT exam FROM prep_payments p
+      WHERE p.user_id = u.id AND p.status = 'success' AND p.exam IS NOT NULL
+    )) AS subscribedExams,
+    (SELECT COALESCE(SUM(amount_kobo), 0) FROM prep_referral_commissions c
+      WHERE c.ambassador_id = ? AND c.prep_user_id = u.id) AS earnedKobo
+    FROM prep_users u WHERE u.ambassador_id = ?
+    ORDER BY u.created_at DESC`, [ambassadorId, ambassadorId])
+  const commissions = rows(`SELECT c.payment_reference AS paymentReference, c.exam, c.amount_kobo AS amountKobo,
+    c.paid_at AS paidAt, u.name AS referralName,
+    COALESCE((
+      SELECT w.status FROM prep_ambassador_withdrawal_items i
+      JOIN prep_ambassador_withdrawals w ON w.id = i.withdrawal_id
+      WHERE i.commission_id = c.id AND w.status IN ('pending', 'approved')
+      ORDER BY CASE w.status WHEN 'approved' THEN 0 ELSE 1 END LIMIT 1
+    ), 'unpaid') AS withdrawalStatus
+    FROM prep_referral_commissions c
+    LEFT JOIN prep_users u ON u.id = c.prep_user_id
+    WHERE c.ambassador_id = ? ORDER BY c.paid_at DESC LIMIT 200`, [ambassadorId])
+  const unpaidKobo = rows(`SELECT COALESCE(SUM(c.amount_kobo), 0) AS total
+    FROM prep_referral_commissions c WHERE c.ambassador_id = ?
+    AND NOT EXISTS (
+      SELECT 1 FROM prep_ambassador_withdrawal_items i
+      JOIN prep_ambassador_withdrawals w ON w.id = i.withdrawal_id
+      WHERE i.commission_id = c.id AND w.status = 'approved'
+    )`, [ambassadorId])[0].total
+  const paidKobo = rows("SELECT COALESCE(SUM(amount_kobo), 0) AS total FROM prep_ambassador_withdrawals WHERE ambassador_id = ? AND status = 'approved'", [ambassadorId])[0].total
+  const pendingKobo = rows("SELECT COALESCE(SUM(amount_kobo), 0) AS total FROM prep_ambassador_withdrawals WHERE ambassador_id = ? AND status = 'pending'", [ambassadorId])[0].total
+  const withdrawals = rows(`SELECT w.id, w.amount_kobo AS amountKobo, w.status, w.requested_at AS requestedAt, w.processed_at AS processedAt,
+    (SELECT GROUP_CONCAT(month, ', ') FROM (
+      SELECT DISTINCT substr(c.paid_at, 1, 7) AS month
+      FROM prep_ambassador_withdrawal_items i
+      JOIN prep_referral_commissions c ON c.id = i.commission_id
+      WHERE i.withdrawal_id = w.id ORDER BY month
+    )) AS commissionMonths
+    FROM prep_ambassador_withdrawals w
+    WHERE w.ambassador_id = ? ORDER BY w.requested_at DESC LIMIT 50`, [ambassadorId])
+  response.json({
+    ambassador: {
+      id: ambassador.id, name: ambassador.name, username: ambassador.username, referralCode: ambassador.referralCode,
+      commissionsNaira: {
+        JAMB: ambassador.jambCommissionKobo / 100,
+        WAEC: ambassador.waecCommissionKobo / 100,
+        NECO: ambassador.necoCommissionKobo / 100,
+      },
+    },
+    referralCount: referrals.length,
+    unpaidCommissionNaira: unpaidKobo / 100,
+    paidCommissionNaira: paidKobo / 100,
+    pendingWithdrawalNaira: pendingKobo / 100,
+    withdrawalAvailableNaira: pendingKobo > 0 ? 0 : unpaidKobo / 100,
+    canRequestWithdrawal: unpaidKobo > 0 && pendingKobo === 0,
+    referrals: referrals.map((referral) => ({
+      id: referral.id, name: referral.name, phone: referral.phone || '',
+      createdAt: referral.createdAt, subscribedExams: referral.subscribedExams || '',
+      earnedNaira: referral.earnedKobo / 100,
+    })),
+    commissions: commissions.map((commission) => ({
+      paymentReference: commission.paymentReference, exam: commission.exam, amountNaira: commission.amountKobo / 100,
+      paidAt: commission.paidAt, referralName: commission.referralName || 'Deleted Prep account', withdrawalStatus: commission.withdrawalStatus,
+    })),
+    withdrawals: withdrawals.map((withdrawal) => ({
+      id: withdrawal.id, amountNaira: withdrawal.amountKobo / 100, status: withdrawal.status,
+      requestedAt: withdrawal.requestedAt, processedAt: withdrawal.processedAt,
+      commissionMonths: withdrawal.commissionMonths || '',
+    })),
+  })
+})
+
+app.post('/api/prep/ambassador/withdrawals', ambassadorAuth, (request, response) => {
+  const ambassadorId = request.ambassador.id
+  const bankName = String(request.body?.bankName || '').trim()
+  const accountName = String(request.body?.accountName || '').trim()
+  const accountNumber = String(request.body?.accountNumber || '').trim()
+  if (!bankName || bankName.length > 100) return response.status(400).json({ error: 'Enter a bank name of up to 100 characters.' })
+  if (!accountName || accountName.length > 100) return response.status(400).json({ error: 'Enter an account name of up to 100 characters.' })
+  if (!/^\d{6,20}$/.test(accountNumber)) return response.status(400).json({ error: 'Enter an account number containing 6 to 20 digits.' })
+  let withdrawal
+  try {
+    db.run('BEGIN IMMEDIATE')
+    if (rows("SELECT id FROM prep_ambassador_withdrawals WHERE ambassador_id = ? AND status = 'pending'", [ambassadorId]).length) {
+      db.run('ROLLBACK')
+      return response.status(409).json({ error: 'You already have a withdrawal request awaiting Creator approval.' })
+    }
+    const commissions = rows(`SELECT c.id, c.amount_kobo AS amountKobo FROM prep_referral_commissions c
+      WHERE c.ambassador_id = ? AND NOT EXISTS (
+        SELECT 1 FROM prep_ambassador_withdrawal_items i
+        JOIN prep_ambassador_withdrawals w ON w.id = i.withdrawal_id
+        WHERE i.commission_id = c.id AND w.status IN ('pending', 'approved')
+      )`, [ambassadorId])
+    const amountKobo = commissions.reduce((total, commission) => total + Number(commission.amountKobo), 0)
+    if (amountKobo <= 0) {
+      db.run('ROLLBACK')
+      return response.status(409).json({ error: 'There is no unpaid commission available to withdraw.' })
+    }
+    const id = crypto.randomUUID()
+    const requestedAt = new Date().toISOString()
+    db.run("INSERT INTO prep_ambassador_withdrawals (id, ambassador_id, amount_kobo, status, requested_at, bank_name, account_name, account_number) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)", [
+      id, ambassadorId, amountKobo, requestedAt, bankName, accountName, accountNumber,
+    ])
+    for (const commission of commissions) {
+      db.run('INSERT INTO prep_ambassador_withdrawal_items (withdrawal_id, commission_id) VALUES (?, ?)', [id, commission.id])
+    }
+    db.run('COMMIT')
+    persist()
+    withdrawal = { id, amountNaira: amountKobo / 100, requestedAt }
+  } catch (error) {
+    try { db.run('ROLLBACK') } catch { /* transaction may already be closed */ }
+    console.error('Could not create Prep ambassador withdrawal request.', error)
+    return response.status(500).json({ error: 'Could not submit your withdrawal request. No changes were saved.' })
+  }
+  creatorLog('prep-ambassador-withdrawal-requested', `${request.ambassador.name} (@${request.ambassador.username}) requested a ₦${withdrawal.amountNaira.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Prep ambassador withdrawal.`)
+  response.status(201).json({ withdrawal })
+})
+
+app.post('/api/prep/ambassador/logout', ambassadorAuth, (request, response) => {
+  run('DELETE FROM prep_ambassador_sessions WHERE token_hash = ?', [hashToken(request.ambassadorToken)])
+  response.sendStatus(204)
+})
+
+app.get('/api/prep/me', prepAuth, (request, response) => response.json({
+  user: request.prepUser,
+  monthlyFeesNaira: Object.fromEntries(Object.entries(currentPrepMonthlyFeeKobo()).map(([exam, fee]) => [exam, fee / 100])),
+  paymentsReady: Boolean(PAYSTACK_SECRET)
+}))
+
+app.post('/api/prep/payment/checkout', prepAuth, async (request, response) => {
+  let reference = ''
+  try {
+    const exam = String(request.body?.exam || '').toUpperCase()
+    if (!['JAMB', 'WAEC', 'NECO'].includes(exam)) return response.status(400).json({ error: 'Choose JAMB, WAEC, or NECO for this payment.' })
+    if (request.prepUser.subjectSelectionEnabled && !request.prepUser.paid && request.prepUser.selectedExam && exam !== request.prepUser.selectedExam) {
+      return response.status(403).json({ error: `Complete registration by paying for your selected ${request.prepUser.selectedExam} package.` })
+    }
+    if (!PAYSTACK_SECRET) return response.status(503).json({ error: 'Online payments are not set up yet. Please contact the platform administrator.' })
+    const email = String(request.body?.email || '').trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return response.status(400).json({ error: 'Enter a valid email address for your payment receipt.' })
+    reference = 'TPP-' + crypto.randomBytes(12).toString('hex')
+    const amountKobo = currentPrepMonthlyFeeKobo()[exam]
+    const origin = `${request.protocol}://${request.get('host')}/prep`
+    run('INSERT INTO prep_payments (reference, user_id, email, amount_kobo, status, created_at, exam) VALUES (?, ?, ?, ?, ?, ?, ?)', [reference, request.prepUser.id, email, amountKobo, 'pending', new Date().toISOString(), exam])
+    const result = await paystack('/transaction/initialize', {
+      method: 'POST',
+      body: JSON.stringify({ email, amount: amountKobo, reference, currency: 'NGN', callback_url: origin, metadata: { prepUserId: request.prepUser.id, exam, paymentType: 'monthly-prep-access' } })
+    })
+    if (!result.status || !result.data?.authorization_url) {
+      run("UPDATE prep_payments SET status = 'abandoned' WHERE reference = ? AND status = 'pending'", [reference])
+      const providerMessage = String(result.message || '').trim().slice(0, 200)
+      console.error('Prep Paystack checkout initialization rejected.', {
+        status: result._httpStatus,
+        exam,
+        amountKobo,
+        currency: 'NGN',
+        message: providerMessage || 'No provider message.',
+      })
+      return response.status(502).json({
+        error: /no active channel to process transaction/i.test(providerMessage)
+          ? 'Paystack reports no payment channel is available for this Prep transaction. Since CBT payments work, contact Paystack Support and ask them to check why this Prep amount and payment request are not eligible. No payment was taken.'
+          : providerMessage
+            ? `Paystack could not start checkout: ${providerMessage}`
+            : 'Paystack could not start checkout. Please try again or contact the platform administrator.',
+      })
+    }
+    response.json({ authorizationUrl: result.data.authorization_url, reference, amountNaira: amountKobo / 100, exam })
+  } catch (error) {
+    if (reference) {
+      try { run("UPDATE prep_payments SET status = 'abandoned' WHERE reference = ? AND status = 'pending'", [reference]) }
+      catch (cleanupError) { console.error('Could not close failed Prep payment attempt.', cleanupError) }
+    }
+    console.error('Prep Paystack checkout request failed.', error)
+    response.status(502).json({
+      error: error?.name === 'AbortError'
+        ? 'Paystack took too long to respond. Please try again.'
+        : 'Could not connect to Paystack to start checkout. Please try again shortly.',
+    })
+  }
+})
+
+app.post('/api/prep/payment/verify/:reference', prepAuth, async (request, response) => {
+  try {
+    if (!PAYSTACK_SECRET) return response.status(503).json({ error: 'Online payments are not set up yet. Please contact the platform administrator.' })
+    const reference = String(request.params.reference)
+    const payment = rows('SELECT * FROM prep_payments WHERE reference = ? AND user_id = ?', [reference, request.prepUser.id]).at(0)
+    if (!payment) return response.status(404).json({ error: 'Prep payment not found.' })
+    if (payment.status !== 'success') {
+      const result = await paystack(`/transaction/verify/${encodeURIComponent(reference)}`)
+      if (result.status && result.data?.status === 'success') {
+        const fulfilled = fulfilPrepPayment(reference, result.data.amount, result.data.currency)
+        if (!fulfilled.ok) return response.status(409).json({ error: fulfilled.error })
+      } else {
+        return response.json({ status: result.data?.status || 'unknown', paid: false })
+      }
+    }
+    const updatedUser = rows('SELECT access_until AS accessUntil FROM prep_users WHERE id = ?', [request.prepUser.id]).at(0)
+    const updatedExamAccess = payment.exam ? rows('SELECT access_until AS accessUntil FROM prep_exam_access WHERE user_id = ? AND exam = ?', [request.prepUser.id, payment.exam]).at(0) : null
+    response.json({ status: 'success', paid: true, exam: payment.exam || null, accessUntil: updatedExamAccess?.accessUntil || updatedUser?.accessUntil || null })
+  } catch (error) {
+    console.error('prep payment verification failed', error)
+    response.status(502).json({ error: 'Could not confirm payment yet. Please check again shortly.' })
+  }
+})
+
+app.post('/api/prep/logout', prepAuth, (request, response) => {
+  run('DELETE FROM prep_sessions WHERE token_hash = ?', [hashToken(request.prepToken)])
+  response.sendStatus(204)
+})
+
+app.get('/api/prep/catalog', prepAuth, requirePrepPayment, (request, response) => {
+  const subjects = rows('SELECT exam, subject, year, COUNT(*) AS questions FROM prep_questions WHERE active = 1 GROUP BY exam, subject, year ORDER BY exam, subject, year')
+  const exams = ['JAMB', 'WAEC', 'NECO'].map((exam) => ({
+    exam,
+    subjects: hasPrepExamAccess(request.prepUser, exam)
+      ? [...new Set(subjects.filter((item) => item.exam === exam && hasPrepSubjectAccess(request.prepUser, exam, item.subject)).map((item) => item.subject))].map((subject) => {
+        const years = subjects.filter((item) => item.exam === exam && item.subject === subject)
+        return {
+          subject,
+          questions: years.reduce((total, item) => total + Number(item.questions), 0),
+          years: years.map((item) => ({ year: item.year === null ? null : Number(item.year), questions: Number(item.questions) })),
+        }
+      })
+      : []
+  })).filter((item) => item.subjects.length > 0 || hasPrepExamAccess(request.prepUser, item.exam))
+  response.json({ exams })
+})
+
+app.post('/api/prep/subjects', prepAuth, (request, response) => {
+  const exam = String(request.body?.exam || '').trim().toUpperCase()
+  const requestedSubject = String(request.body?.subject || '').trim()
+  if (!['JAMB', 'WAEC', 'NECO'].includes(exam) || !requestedSubject) return response.status(400).json({ error: 'Choose an exam and subject.' })
+  if (!request.prepUser.subjectSelectionEnabled) return response.status(403).json({ error: 'Subject selection is available for accounts created with exam subject choices.' })
+  if (!hasPrepExamAccess(request.prepUser, exam)) return response.status(402).json({ error: `Pay for ${exam} access before adding subjects.` })
+  const subject = prepSubjectsForExam(exam).find((available) => available.toLocaleLowerCase() === requestedSubject.toLocaleLowerCase())
+  if (!subject) return response.status(404).json({ error: 'That subject is not available for the selected exam.' })
+  if (hasPrepSubjectAccess(request.prepUser, exam, subject)) return response.status(409).json({ error: 'That subject is already in your selection.' })
+  const selectedSubjects = request.prepUser.selectedSubjects[exam] || []
+  if (exam === 'JAMB' && selectedSubjects.length >= 4) return response.status(409).json({ error: 'JAMB accounts are limited to four subjects.' })
+  const addedAt = new Date().toISOString()
+  run('INSERT INTO prep_user_exam_subjects (user_id, exam, subject, added_at) VALUES (?, ?, ?, ?)', [request.prepUser.id, exam, subject, addedAt])
+  response.json({ exam, subject, selectedSubjects: [...selectedSubjects, subject] })
+})
+
+app.post('/api/prep/practice', prepAuth, requirePrepExamPayment, (request, response) => {
+  const exam = String(request.body?.exam || '').toUpperCase()
+  const subject = String(request.body?.subject || '').trim()
+  const count = Number(request.body?.count)
+  const durationMinutes = Number(request.body?.durationMinutes)
+  const hasYearFilter = Object.prototype.hasOwnProperty.call(request.body || {}, 'year')
+  const year = request.body?.year === null ? null : Number(request.body?.year)
+  if (!['JAMB', 'WAEC', 'NECO'].includes(exam) || !subject) return response.status(400).json({ error: 'Choose an exam and subject.' })
+  if (!hasPrepSubjectAccess(request.prepUser, exam, subject)) return response.status(403).json({ error: 'Choose a subject included in your exam selection.' })
+  if (!Number.isInteger(count) || count < 1 || count > 100) return response.status(400).json({ error: 'Choose between 1 and 100 questions.' })
+  if (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 180) return response.status(400).json({ error: 'Choose a duration between 1 and 180 minutes.' })
+  if (hasYearFilter && request.body?.year !== null && (!Number.isInteger(year) || year < 1950 || year > new Date().getFullYear() + 1)) return response.status(400).json({ error: 'Choose a valid question year.' })
+  const yearClause = !hasYearFilter ? '' : year === null ? ' AND year IS NULL' : ' AND year = ?'
+  const params = hasYearFilter && year !== null ? [exam, subject, year, count] : [exam, subject, count]
+  const selected = rows(`SELECT id FROM prep_questions WHERE active = 1 AND exam = ? AND subject = ?${yearClause} ORDER BY RANDOM() LIMIT ?`, params)
+  if (!selected.length) return response.status(404).json({ error: 'There are no questions for this exam, subject, and year.' })
+  const questionIds = selected.map((item) => item.id)
+  for (let index = questionIds.length - 1; index > 0; index -= 1) {
+    const swapIndex = crypto.randomInt(index + 1)
+    ;[questionIds[index], questionIds[swapIndex]] = [questionIds[swapIndex], questionIds[index]]
+  }
+  const id = crypto.randomUUID()
+  const startedAt = Date.now()
+  run(
+    'INSERT INTO prep_practice_sessions (id, user_id, exam, subject, question_ids, started_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [id, request.prepUser.id, exam, subject, JSON.stringify(questionIds), startedAt, startedAt + durationMinutes * 60_000]
+  )
+  const questions = rows(
+    `SELECT id, question AS text, options, explanation, year FROM prep_questions WHERE id IN (${questionIds.map(() => '?').join(',')})`,
+    questionIds
+  ).map((item) => ({ ...item, options: JSON.parse(item.options) }))
+  const byId = new Map(questions.map((item) => [item.id, item]))
+  response.status(201).json({ practiceId: id, startedAt, expiresAt: startedAt + durationMinutes * 60_000, questions: questionIds.map((questionId) => byId.get(questionId)) })
+})
+
+app.post('/api/prep/practice/:id/submit', prepAuth, requirePrepExamPaymentForSubmission, (request, response) => {
+  const practice = rows('SELECT * FROM prep_practice_sessions WHERE id = ? AND user_id = ?', [request.params.id, request.prepUser.id]).at(0)
+  if (!practice) return response.status(404).json({ error: 'Practice session not found.' })
+  if (practice.completed_at) return response.status(409).json({ error: 'This practice session has already been submitted.' })
+  const ids = JSON.parse(practice.question_ids)
+  const answers = request.body?.answers
+  if (!answers || typeof answers !== 'object' || Array.isArray(answers)) return response.status(400).json({ error: 'Submit your selected answers to finish the practice.' })
+  if (Object.keys(answers).some((id) => !ids.includes(id) || !Number.isInteger(answers[id]) || answers[id] < 0 || answers[id] > 3)) {
+    return response.status(400).json({ error: 'One or more selected answers are invalid.' })
+  }
+  const questions = rows(
+    `SELECT id, question AS text, options, answer, explanation, year FROM prep_questions WHERE id IN (${ids.map(() => '?').join(',')})`,
+    ids
+  )
+  if (questions.length !== ids.length) return response.status(409).json({ error: 'Some questions in this practice session are no longer available.' })
+  const score = questions.reduce((total, question) => total + (answers[question.id] === Number(question.answer) ? 1 : 0), 0)
+  const completedAt = new Date().toISOString()
+  const attemptId = crypto.randomUUID()
+  db.run('BEGIN')
+  try {
+    db.run('UPDATE prep_practice_sessions SET completed_at = ? WHERE id = ? AND completed_at IS NULL', [completedAt, practice.id])
+    db.run('INSERT INTO prep_attempts (id, user_id, exam, subject, score, total, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [attemptId, request.prepUser.id, practice.exam, practice.subject, score, questions.length, completedAt])
+    db.run('COMMIT')
+  } catch (error) {
+    db.run('ROLLBACK')
+    throw error
+  }
+  persist()
+  const review = questions.map((question) => ({
+    id: question.id,
+    text: question.text,
+    options: JSON.parse(question.options),
+    answer: Number(question.answer),
+    selected: Number.isInteger(answers[question.id]) ? answers[question.id] : null,
+    explanation: question.explanation,
+    year: question.year
+  }))
+  response.json({ id: attemptId, exam: practice.exam, subject: practice.subject, score, total: questions.length, createdAt: completedAt, review })
+})
+
+app.get('/api/prep/attempts', prepAuth, requirePrepPayment, (request, response) => {
+  const attempts = rows('SELECT id, exam, subject, score, total, created_at AS createdAt FROM prep_attempts WHERE user_id = ? ORDER BY created_at DESC LIMIT 50', [request.prepUser.id])
+  response.json({ attempts })
+})
+
 function creatorLog(action, details) {
   run('INSERT INTO creator_log (id, at, action, details) VALUES (?, ?, ?, ?)', [crypto.randomUUID(), new Date().toISOString(), action, String(details).slice(0, 500)])
 }
@@ -1214,6 +2125,362 @@ app.post('/api/creator/login', (request, response) => {
   response.json({ token })
 })
 
+function prepAmbassadorCommissionInput(value) {
+  const fees = {}
+  const errors = []
+  for (const exam of ['JAMB', 'WAEC', 'NECO']) {
+    const amount = Number(value?.[exam])
+    const kobo = Math.round(amount * 100)
+    if (!Number.isFinite(amount) || amount < 0 || amount > 10_000_000 || Math.abs(amount * 100 - kobo) > 0.000001) {
+      errors.push(`${exam} commission must be between ₦0 and ₦10,000,000 with no more than two decimal places.`)
+    } else {
+      fees[exam] = kobo
+    }
+  }
+  return { fees, error: errors.join(' ') }
+}
+
+app.get('/api/creator/prep/ambassadors', creatorAuth, (_request, response) => {
+  const ambassadors = rows(`SELECT a.id, a.name, a.username, a.referral_code AS referralCode, a.created_at AS createdAt,
+    a.jamb_commission_kobo AS jambCommissionKobo,
+    a.waec_commission_kobo AS waecCommissionKobo,
+    a.neco_commission_kobo AS necoCommissionKobo,
+    (SELECT COUNT(*) FROM prep_users u WHERE u.ambassador_id = a.id) AS referrals,
+    (SELECT COALESCE(SUM(amount_kobo), 0) FROM prep_referral_commissions c
+      WHERE c.ambassador_id = a.id AND NOT EXISTS (
+        SELECT 1 FROM prep_ambassador_withdrawal_items i
+        JOIN prep_ambassador_withdrawals w ON w.id = i.withdrawal_id
+        WHERE i.commission_id = c.id AND w.status = 'approved'
+      )) AS unpaidKobo,
+    (SELECT COALESCE(SUM(amount_kobo), 0) FROM prep_ambassador_withdrawals w WHERE w.ambassador_id = a.id AND w.status = 'approved') AS paidKobo,
+    (SELECT COALESCE(SUM(amount_kobo), 0) FROM prep_ambassador_withdrawals w WHERE w.ambassador_id = a.id AND w.status = 'pending') AS pendingWithdrawalKobo
+    FROM prep_ambassadors a WHERE a.active = 1 ORDER BY a.created_at DESC`).map((ambassador) => ({
+    id: ambassador.id, name: ambassador.name, username: ambassador.username, referralCode: ambassador.referralCode,
+    createdAt: ambassador.createdAt, referrals: ambassador.referrals,
+    unpaidNaira: ambassador.unpaidKobo / 100, paidNaira: ambassador.paidKobo / 100,
+    pendingWithdrawalNaira: ambassador.pendingWithdrawalKobo / 100,
+    commissionsNaira: {
+      JAMB: ambassador.jambCommissionKobo / 100,
+      WAEC: ambassador.waecCommissionKobo / 100,
+      NECO: ambassador.necoCommissionKobo / 100,
+    },
+  }))
+  response.json({ ambassadors })
+})
+
+app.get('/api/creator/prep/ambassador-withdrawals', creatorAuth, (_request, response) => {
+  const withdrawals = rows(`SELECT w.id, w.ambassador_id AS ambassadorId, a.name AS ambassadorName, a.username AS ambassadorUsername,
+    w.amount_kobo AS amountKobo, w.status, w.requested_at AS requestedAt, w.processed_at AS processedAt,
+    w.bank_name AS bankName, w.account_name AS accountName, w.account_number AS accountNumber,
+    (SELECT GROUP_CONCAT(month, ', ') FROM (
+      SELECT DISTINCT substr(c.paid_at, 1, 7) AS month
+      FROM prep_ambassador_withdrawal_items i
+      JOIN prep_referral_commissions c ON c.id = i.commission_id
+      WHERE i.withdrawal_id = w.id ORDER BY month
+    )) AS commissionMonths
+    FROM prep_ambassador_withdrawals w
+    JOIN prep_ambassadors a ON a.id = w.ambassador_id
+    ORDER BY CASE w.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, w.requested_at DESC
+    LIMIT 300`).map((withdrawal) => ({
+    id: withdrawal.id, ambassadorId: withdrawal.ambassadorId, ambassadorName: withdrawal.ambassadorName,
+    ambassadorUsername: withdrawal.ambassadorUsername, amountNaira: withdrawal.amountKobo / 100,
+    status: withdrawal.status, requestedAt: withdrawal.requestedAt, processedAt: withdrawal.processedAt,
+    commissionMonths: withdrawal.commissionMonths || '', bankName: withdrawal.bankName,
+    accountName: withdrawal.accountName, accountNumber: withdrawal.accountNumber,
+  }))
+  response.json({ withdrawals, pendingCount: withdrawals.filter((withdrawal) => withdrawal.status === 'pending').length })
+})
+
+app.post('/api/creator/prep/ambassador-withdrawals/:id/:action', creatorAuth, (request, response) => {
+  const withdrawalId = String(request.params.id || '').trim()
+  const action = String(request.params.action || '')
+  if (!['approve', 'reject'].includes(action)) return response.status(404).json({ error: 'Withdrawal action not found.' })
+  const withdrawal = rows(`SELECT w.id, w.ambassador_id AS ambassadorId, w.amount_kobo AS amountKobo, w.status,
+    a.name AS ambassadorName, a.username AS ambassadorUsername
+    FROM prep_ambassador_withdrawals w JOIN prep_ambassadors a ON a.id = w.ambassador_id
+    WHERE w.id = ?`, [withdrawalId]).at(0)
+  if (!withdrawal) return response.status(404).json({ error: 'Withdrawal request not found.' })
+  if (withdrawal.status !== 'pending') return response.status(409).json({ error: `This withdrawal has already been ${withdrawal.status}.` })
+  const status = action === 'approve' ? 'approved' : 'rejected'
+  const processedAt = new Date().toISOString()
+  try {
+    db.run('BEGIN IMMEDIATE')
+    db.run('UPDATE prep_ambassador_withdrawals SET status = ?, processed_at = ? WHERE id = ? AND status = \'pending\'', [status, processedAt, withdrawalId])
+    if (db.getRowsModified() !== 1) {
+      db.run('ROLLBACK')
+      return response.status(409).json({ error: 'This withdrawal request was already processed. Refresh the list.' })
+    }
+    db.run('COMMIT')
+    persist()
+  } catch (error) {
+    try { db.run('ROLLBACK') } catch { /* transaction may already be closed */ }
+    console.error(`Could not ${action} Prep ambassador withdrawal.`, error)
+    return response.status(500).json({ error: 'Could not update this withdrawal request. No changes were saved.' })
+  }
+  creatorLog(
+    `prep-ambassador-withdrawal-${status}`,
+    `${withdrawal.ambassadorName} (@${withdrawal.ambassadorUsername}) withdrawal of ₦${(withdrawal.amountKobo / 100).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was ${status}.`,
+  )
+  response.json({ id: withdrawalId, status, processedAt })
+})
+
+app.post('/api/creator/prep/ambassadors', creatorAuth, (request, response) => {
+  const name = String(request.body?.name || '').trim()
+  const username = String(request.body?.username || '').trim()
+  const password = String(request.body?.password || '')
+  const referralCode = String(request.body?.referralCode || '').trim().toUpperCase()
+  const { fees, error } = prepAmbassadorCommissionInput(request.body?.commissionsNaira)
+  if (name.length < 2 || name.length > 100) return response.status(400).json({ error: 'Enter the ambassador name (2 to 100 characters).' })
+  if (!/^[a-zA-Z0-9._-]{3,30}$/.test(username)) return response.status(400).json({ error: 'Choose a username with 3 to 30 letters, numbers, dots, underscores, or hyphens.' })
+  if (password.length < 8 || password.length > 256) return response.status(400).json({ error: 'The password must be between 8 and 256 characters.' })
+  if (!/^[A-Z0-9_-]{3,30}$/.test(referralCode)) return response.status(400).json({ error: 'Choose a referral code with 3 to 30 letters, numbers, hyphens, or underscores.' })
+  if (error) return response.status(400).json({ error })
+  if (rows('SELECT id FROM prep_ambassadors WHERE username = ? COLLATE NOCASE', [username]).length) return response.status(409).json({ error: 'That ambassador username is already in use.' })
+  if (rows('SELECT code FROM prep_ambassador_referral_codes WHERE code = ? COLLATE NOCASE UNION SELECT referral_code AS code FROM prep_ambassadors WHERE referral_code = ? COLLATE NOCASE', [referralCode, referralCode]).length) return response.status(409).json({ error: 'That referral code is already in use. Choose a different one.' })
+  const id = crypto.randomUUID()
+  const createdAt = new Date().toISOString()
+  run(`INSERT INTO prep_ambassadors
+    (id, name, username, password_hash, referral_code, jamb_commission_kobo, waec_commission_kobo, neco_commission_kobo, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    id, name, username, hashPassword(password), referralCode,
+    fees.JAMB, fees.WAEC, fees.NECO, createdAt,
+  ])
+  run('INSERT INTO prep_ambassador_referral_codes (code, ambassador_id, created_at) VALUES (?, ?, ?)', [referralCode, id, createdAt])
+  creatorLog('prep-ambassador-created', `Created Prep ambassador ${name} (@${username}) with referral code ${referralCode}.`)
+  persist()
+  response.status(201).json({ ambassador: {
+    id, name, username, referralCode, createdAt, referrals: 0, unpaidNaira: 0, paidNaira: 0, pendingWithdrawalNaira: 0,
+    commissionsNaira: { JAMB: fees.JAMB / 100, WAEC: fees.WAEC / 100, NECO: fees.NECO / 100 },
+  } })
+})
+
+app.post('/api/creator/prep/ambassadors/:id/referral-code', creatorAuth, (request, response) => {
+  const ambassadorId = String(request.params.id || '').trim()
+  const referralCode = String(request.body?.referralCode || '').trim().toUpperCase()
+  if (!/^[A-Z0-9_-]{3,30}$/.test(referralCode)) return response.status(400).json({ error: 'Choose a referral code with 3 to 30 letters, numbers, hyphens, or underscores.' })
+  const ambassador = rows('SELECT id, name, referral_code AS referralCode FROM prep_ambassadors WHERE id = ? AND active = 1', [ambassadorId]).at(0)
+  if (!ambassador) return response.status(404).json({ error: 'Ambassador account not found.' })
+  const usedCode = rows(`SELECT code FROM prep_ambassador_referral_codes WHERE code = ? COLLATE NOCASE AND ambassador_id != ?
+    UNION SELECT referral_code AS code FROM prep_ambassadors WHERE referral_code = ? COLLATE NOCASE AND id != ?`,
+  [referralCode, ambassadorId, referralCode, ambassadorId]).length > 0
+  if (usedCode) return response.status(409).json({ error: 'That referral code is already in use. Choose a different one.' })
+  if (ambassador.referralCode.toLocaleUpperCase() !== referralCode) {
+    const updatedAt = new Date().toISOString()
+    run('INSERT OR IGNORE INTO prep_ambassador_referral_codes (code, ambassador_id, created_at) VALUES (?, ?, ?)', [referralCode, ambassadorId, updatedAt])
+    run('UPDATE prep_ambassadors SET referral_code = ? WHERE id = ?', [referralCode, ambassadorId])
+    creatorLog('prep-ambassador-referral-code-updated', `Updated referral code for ${ambassador.name} to ${referralCode}.`)
+    persist()
+  }
+  response.json({ referralCode })
+})
+
+app.post('/api/creator/prep/ambassadors/:id/commission', creatorAuth, (request, response) => {
+  const ambassadorId = String(request.params.id || '').trim()
+  const { fees, error } = prepAmbassadorCommissionInput(request.body?.commissionsNaira)
+  if (error) return response.status(400).json({ error })
+  const ambassador = rows('SELECT id, name, username FROM prep_ambassadors WHERE id = ? AND active = 1', [ambassadorId]).at(0)
+  if (!ambassador) return response.status(404).json({ error: 'Ambassador not found.' })
+  run(`UPDATE prep_ambassadors SET jamb_commission_kobo = ?, waec_commission_kobo = ?, neco_commission_kobo = ? WHERE id = ?`, [
+    fees.JAMB, fees.WAEC, fees.NECO, ambassadorId,
+  ])
+  creatorLog('prep-ambassador-commission-updated', `Updated exam commissions for Prep ambassador ${ambassador.name} (@${ambassador.username}).`)
+  persist()
+  response.json({ commissionsNaira: { JAMB: fees.JAMB / 100, WAEC: fees.WAEC / 100, NECO: fees.NECO / 100 } })
+})
+
+app.get('/api/creator/prep/users', creatorAuth, (request, response) => {
+  const query = String(request.query.q || '').trim()
+  if (query.length > 100 || (query && query.length < 2)) return response.status(400).json({ error: 'Search using 2 to 100 characters.' })
+  const search = query ? 'WHERE name LIKE ? COLLATE NOCASE OR username LIKE ? COLLATE NOCASE' : ''
+  const params = query ? [`%${query}%`, `%${query}%`] : []
+  const users = rows(`SELECT id, name, username, access_until AS accessUntil,
+    (SELECT access_until FROM prep_exam_access WHERE user_id = prep_users.id AND exam = 'JAMB') AS jambAccessUntil,
+    (SELECT access_until FROM prep_exam_access WHERE user_id = prep_users.id AND exam = 'WAEC') AS waecAccessUntil,
+    (SELECT access_until FROM prep_exam_access WHERE user_id = prep_users.id AND exam = 'NECO') AS necoAccessUntil
+    FROM prep_users ${search}
+    ORDER BY name COLLATE NOCASE`, params).map((user) => ({
+    id: user.id,
+    name: user.name,
+    username: user.username,
+    accessUntil: user.accessUntil || null,
+    examAccess: {
+      JAMB: user.jambAccessUntil || null,
+      WAEC: user.waecAccessUntil || null,
+      NECO: user.necoAccessUntil || null,
+    },
+  }))
+  response.json({ users })
+})
+
+app.delete('/api/creator/prep/users/:id', creatorAuth, (request, response) => {
+  const userId = String(request.params.id || '').trim()
+  const user = rows('SELECT id FROM prep_users WHERE id = ?', [userId]).at(0)
+  if (!user) return response.status(404).json({ error: 'Prep account not found. Refresh the user list and try again.' })
+
+  try {
+    db.run('BEGIN')
+    run('DELETE FROM prep_sessions WHERE user_id = ?', [userId])
+    run('DELETE FROM prep_exam_access WHERE user_id = ?', [userId])
+    run('DELETE FROM prep_practice_sessions WHERE user_id = ?', [userId])
+    run('DELETE FROM prep_attempts WHERE user_id = ?', [userId])
+    run('DELETE FROM prep_payments WHERE user_id = ?', [userId])
+    run('DELETE FROM prep_users WHERE id = ?', [userId])
+    run('INSERT INTO creator_log (id, at, action, details) VALUES (?, ?, ?, ?)', [
+      crypto.randomUUID(),
+      new Date().toISOString(),
+      'prep-user-deleted',
+      `Deleted Prep account ${userId} and its access, payment, and practice records.`
+    ])
+    db.run('COMMIT')
+    persist()
+  } catch (error) {
+    db.run('ROLLBACK')
+    console.error('Could not delete Prep account.', error)
+    return response.status(500).json({ error: 'The Prep account could not be deleted. No changes were saved.' })
+  }
+  response.json({ deleted: true })
+})
+
+app.post('/api/creator/prep/access/manual', creatorAuth, (request, response) => {
+  const userId = String(request.body?.userId || '').trim()
+  const exam = String(request.body?.exam || '').trim().toUpperCase()
+  const method = String(request.body?.method || '').trim()
+  const manualReference = String(request.body?.paymentReference || '').trim().slice(0, 100)
+  const note = String(request.body?.note || '').trim().slice(0, 200)
+  if (!userId || !['JAMB', 'WAEC', 'NECO'].includes(exam)) return response.status(400).json({ error: 'Choose a Prep account and JAMB, WAEC, or NECO.' })
+  if (!['cash', 'bank_transfer', 'other'].includes(method)) return response.status(400).json({ error: 'Choose a valid manual payment method.' })
+  if (String(request.body?.paymentReference || '').trim().length > 100) return response.status(400).json({ error: 'Payment reference must be 100 characters or fewer.' })
+  if (note.length < 3) return response.status(400).json({ error: 'Add a payment note of at least 3 characters for the audit record.' })
+  const user = rows('SELECT id, name, username, access_until AS accessUntil FROM prep_users WHERE id = ?', [userId]).at(0)
+  if (!user) return response.status(404).json({ error: 'Prep account not found. Search again and select a current account.' })
+
+  const now = new Date()
+  const previousAccess = rows('SELECT access_until AS accessUntil FROM prep_exam_access WHERE user_id = ? AND exam = ?', [userId, exam]).at(0)?.accessUntil
+  const existingEnd = [previousAccess, user.accessUntil].filter(Boolean).map((value) => new Date(value)).sort((first, second) => second.getTime() - first.getTime())[0]
+  const extensionStart = existingEnd && existingEnd.getTime() > now.getTime() ? existingEnd : now
+  const accessUntil = addCalendarMonth(extensionStart).toISOString()
+  const amountKobo = currentPrepMonthlyFeeKobo()[exam]
+  const paymentReference = `TPM-${crypto.randomBytes(12).toString('hex')}`
+  const paidAt = now.toISOString()
+  const label = method === 'bank_transfer' ? 'Bank transfer' : method === 'cash' ? 'Cash' : 'Other manual payment'
+  try {
+    db.run('BEGIN')
+    db.run('INSERT INTO prep_payments (reference, user_id, email, amount_kobo, status, created_at, paid_at, exam, method, note, manual_reference) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      paymentReference, userId, '', amountKobo, 'success', paidAt, paidAt, exam, method, note, manualReference || null,
+    ])
+    db.run('UPDATE prep_users SET paid_at = COALESCE(paid_at, ?) WHERE id = ?', [paidAt, userId])
+    db.run('INSERT INTO prep_exam_access (user_id, exam, access_until) VALUES (?, ?, ?) ON CONFLICT(user_id, exam) DO UPDATE SET access_until = excluded.access_until', [userId, exam, accessUntil])
+    recordPrepReferralCommission({ reference: paymentReference, user_id: userId, exam }, paidAt)
+    db.run('INSERT INTO creator_log (id, at, action, details) VALUES (?, ?, ?, ?)', [
+      crypto.randomUUID(),
+      paidAt,
+      'prep-manual-payment',
+      `${label}: ₦${(amountKobo / 100).toLocaleString('en-NG')} for ${user.name} (@${user.username}) — ${exam} access until ${accessUntil}.${manualReference ? ` Receipt/transfer reference: ${manualReference}.` : ''} Note: ${note}`.slice(0, 500),
+    ])
+    db.run('COMMIT')
+    persist()
+  } catch (error) {
+    try { db.run('ROLLBACK') } catch { /* transaction may already be closed */ }
+    console.error('Could not record manual Prep payment.', error)
+    return response.status(500).json({ error: 'Could not record the payment or activate access. No changes were saved.' })
+  }
+  const updatedUser = rows('SELECT id, name, username, access_until AS accessUntil FROM prep_users WHERE id = ?', [userId]).at(0)
+  response.status(201).json({
+    paymentReference,
+    user: {
+      id: updatedUser.id,
+      name: updatedUser.name,
+      username: updatedUser.username,
+      accessUntil: updatedUser.accessUntil || null,
+      examAccess: Object.fromEntries(rows('SELECT exam, access_until AS accessUntil FROM prep_exam_access WHERE user_id = ?', [userId]).map((access) => [access.exam, access.accessUntil])),
+    },
+  })
+})
+
+app.get('/api/creator/prep/questions', creatorAuth, (_request, response) => {
+  const questions = rows('SELECT exam, subject, COUNT(*) AS questions FROM prep_questions WHERE active = 1 GROUP BY exam, subject ORDER BY exam, subject')
+  response.json({ questions })
+})
+
+app.delete('/api/creator/prep/questions/subject', creatorAuth, (request, response) => {
+  const exam = String(request.body?.exam || '').trim().toUpperCase()
+  const subject = String(request.body?.subject || '').trim()
+  if (!['JAMB', 'WAEC', 'NECO'].includes(exam) || !subject || subject.length > 100) {
+    return response.status(400).json({ error: 'Choose a valid exam and subject.' })
+  }
+  const existing = rows('SELECT COUNT(*) AS total FROM prep_questions WHERE active = 1 AND exam = ? AND subject = ?', [exam, subject]).at(0)
+  const total = Number(existing?.total || 0)
+  if (!total) return response.status(404).json({ error: 'This subject has no active questions to delete.' })
+  db.run('BEGIN')
+  try {
+    db.run('UPDATE prep_questions SET active = 0 WHERE active = 1 AND exam = ? AND subject = ?', [exam, subject])
+    db.run('COMMIT')
+  } catch (error) {
+    db.run('ROLLBACK')
+    throw error
+  }
+  persist()
+  creatorLog('Deleted prep subject', `${exam} · ${subject} · ${total} questions`)
+  response.json({ deleted: true, exam, subject, questions: total })
+})
+
+app.post('/api/creator/prep/questions/import', creatorAuth, (request, response) => {
+  const input = request.body?.questions
+  if (!Array.isArray(input) || input.length < 1 || input.length > 500) {
+    return response.status(400).json({ error: 'Import between 1 and 500 questions at a time.' })
+  }
+  const prepared = []
+  const seen = new Set()
+  const errors = []
+  input.forEach((item, index) => {
+    const exam = String(item?.exam || '').trim().toUpperCase()
+    const subject = String(item?.subject || '').trim()
+    const question = String(item?.question || '').trim()
+    const options = item?.options
+    const answer = Number(item?.answer)
+    const explanation = String(item?.explanation || '').trim()
+    const year = item?.year === '' || item?.year == null ? null : Number(item.year)
+    const rowNumber = index + 2
+    if (!['JAMB', 'WAEC', 'NECO'].includes(exam)) errors.push(`Row ${rowNumber}: exam must be JAMB, WAEC, or NECO.`)
+    if (!subject || subject.length > 100) errors.push(`Row ${rowNumber}: subject is required and must be 100 characters or fewer.`)
+    if (!question || question.length > 5000) errors.push(`Row ${rowNumber}: question is required and must be 5,000 characters or fewer.`)
+    if (!Array.isArray(options) || options.length !== 4 || options.some((option) => typeof option !== 'string' || !option.trim() || option.length > 1000)) {
+      errors.push(`Row ${rowNumber}: provide four non-empty options, each no longer than 1,000 characters.`)
+    }
+    if (!Number.isInteger(answer) || answer < 0 || answer > 3) errors.push(`Row ${rowNumber}: answer must be A, B, C, or D.`)
+    if (explanation.length > 5000) errors.push(`Row ${rowNumber}: explanation must be 5,000 characters or fewer.`)
+    if (year !== null && (!Number.isInteger(year) || year < 1950 || year > new Date().getFullYear() + 1)) errors.push(`Row ${rowNumber}: year is invalid.`)
+    const key = `${exam}\u0000${subject.toLowerCase()}\u0000${question.toLowerCase()}`
+    if (seen.has(key)) errors.push(`Row ${rowNumber}: duplicate question in this upload.`)
+    seen.add(key)
+    prepared.push({ exam, subject, question, options, answer, explanation, year })
+  })
+  if (errors.length) return response.status(400).json({ error: errors.slice(0, 30).join(' '), invalidRows: errors.length })
+
+  const now = new Date().toISOString()
+  let inserted = 0
+  let skipped = 0
+  db.run('BEGIN')
+  try {
+    for (const item of prepared) {
+      const duplicate = rows('SELECT id FROM prep_questions WHERE active = 1 AND exam = ? AND subject = ? COLLATE NOCASE AND question = ? COLLATE NOCASE', [item.exam, item.subject, item.question]).length > 0
+      if (duplicate) { skipped += 1; continue }
+      db.run(
+        'INSERT INTO prep_questions (id, exam, subject, question, options, answer, explanation, year, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [crypto.randomUUID(), item.exam, item.subject, item.question, JSON.stringify(item.options.map((option) => option.trim())), item.answer, item.explanation || null, item.year, now]
+      )
+      inserted += 1
+    }
+    db.run('COMMIT')
+  } catch (error) {
+    db.run('ROLLBACK')
+    throw error
+  }
+  persist()
+  if (inserted) creatorLog('Imported prep questions', `${inserted} imported; ${skipped} duplicates skipped`)
+  response.status(201).json({ inserted, skipped })
+})
+
 app.get('/api/creator/overview', creatorAuth, (_request, response) => {
   const count = (sql, id) => Number(rows(sql, [id]).at(0)?.n || 0)
   const schools = rows('SELECT id, name, slug, email, created_at FROM schools ORDER BY created_at DESC').map((school) => ({
@@ -1229,9 +2496,58 @@ app.get('/api/creator/overview', creatorAuth, (_request, response) => {
   response.json({
     schools,
     totals: { schools: schools.length, students: schools.reduce((sum, school) => sum + school.students, 0), creditsHeld: schools.reduce((sum, school) => sum + school.credits, 0), paymentsCount: Number(paid.n), revenueNaira: Number(paid.kobo) / 100 },
+    creditPriceNaira: currentCreditPriceKobo() / 100,
+    prepMonthlyFeesNaira: Object.fromEntries(Object.entries(currentPrepMonthlyFeeKobo()).map(([exam, fee]) => [exam, fee / 100])),
     paymentsReady: Boolean(PAYSTACK_SECRET),
     supportUnread: support.creatorUnread()
   })
+})
+
+app.post('/api/creator/credit-price', creatorAuth, (request, response) => {
+  const priceKobo = parseCreditPriceKobo(request.body?.pricePerCredit)
+  const reason = String(request.body?.reason || '').trim().slice(0, 150)
+  if (priceKobo === null) return response.status(400).json({ error: 'Enter a price of at least ₦0.01 with no more than two decimal places.' })
+  if (reason.length < 3) return response.status(400).json({ error: 'Write a short reason for changing the credit price.' })
+  const previousPriceKobo = currentCreditPriceKobo()
+  try {
+    db.run('BEGIN')
+    db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', ['global:credit_price_kobo', String(priceKobo)])
+    db.run('INSERT INTO creator_log (id, at, action, details) VALUES (?, ?, ?, ?)', [
+      crypto.randomUUID(), new Date().toISOString(), 'credit-price',
+      `Credit price changed from ₦${(previousPriceKobo / 100).toFixed(2)} to ₦${(priceKobo / 100).toFixed(2)} per credit. ${reason}`.slice(0, 500)
+    ])
+    db.run('COMMIT')
+    persist()
+  } catch (error) {
+    try { db.run('ROLLBACK') } catch { /* transaction may already be closed */ }
+    throw error
+  }
+  response.json({ creditPriceNaira: priceKobo / 100 })
+})
+
+app.post('/api/creator/prep-monthly-fees', creatorAuth, (request, response) => {
+  const feesInput = request.body?.monthlyFeesNaira || {}
+  const feesKobo = Object.fromEntries(['JAMB', 'WAEC', 'NECO'].map((exam) => [exam, parseCreditPriceKobo(feesInput[exam])]))
+  const reason = String(request.body?.reason || '').trim().slice(0, 150)
+  if (Object.values(feesKobo).some((fee) => fee === null || fee < 100)) return response.status(400).json({ error: 'Enter each exam monthly fee as at least ₦1.00 with no more than two decimal places.' })
+  if (reason.length < 3) return response.status(400).json({ error: 'Write a short reason for changing the monthly prep fees.' })
+  const previousFeesKobo = currentPrepMonthlyFeeKobo()
+  try {
+    db.run('BEGIN')
+    for (const [exam, fee] of Object.entries(feesKobo)) {
+      db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [`global:prep_monthly_fee_${exam.toLowerCase()}`, String(fee)])
+    }
+    db.run('INSERT INTO creator_log (id, at, action, details) VALUES (?, ?, ?, ?)', [
+      crypto.randomUUID(), new Date().toISOString(), 'prep-monthly-fees',
+      `Prep monthly fees set to JAMB ₦${(feesKobo.JAMB / 100).toFixed(2)}, WAEC ₦${(feesKobo.WAEC / 100).toFixed(2)}, and NECO ₦${(feesKobo.NECO / 100).toFixed(2)} (previously ₦${(previousFeesKobo.JAMB / 100).toFixed(2)}, ₦${(previousFeesKobo.WAEC / 100).toFixed(2)}, and ₦${(previousFeesKobo.NECO / 100).toFixed(2)}). ${reason}`.slice(0, 500)
+    ])
+    db.run('COMMIT')
+    persist()
+  } catch (error) {
+    try { db.run('ROLLBACK') } catch { /* transaction may already be closed */ }
+    throw error
+  }
+  response.json({ prepMonthlyFeesNaira: Object.fromEntries(Object.entries(feesKobo).map(([exam, fee]) => [exam, fee / 100])) })
 })
 
 // Create a school (with its admin) from the console, for example before handing the login details to a school.
@@ -1317,17 +2633,62 @@ app.post('/api/creator/schools/:id/delete', creatorAuth, (request, response) => 
 })
 
 app.get('/api/creator/payments', creatorAuth, (_request, response) => {
-  const payments = rows('SELECT p.reference, p.credits, p.amount_kobo, p.status, p.created_at, p.paid_at, s.name AS school FROM payments p LEFT JOIN schools s ON s.id = p.school_id ORDER BY p.created_at DESC LIMIT 300')
+  const payments = rows('SELECT p.reference, p.credits, p.amount_kobo, p.status, p.created_at, p.paid_at, p.target, s.name AS school FROM payments p LEFT JOIN schools s ON s.id = p.school_id ORDER BY p.created_at DESC LIMIT 300')
     .map((payment) => ({
       reference: payment.reference,
       school: payment.school || '(deleted school)',
       credits: payment.credits,
       amountNaira: payment.amount_kobo / 100,
+      target: payment.target || 'online',
       createdAt: payment.created_at,
       paidAt: payment.paid_at,
       status: payment.status === 'pending' && Date.now() - Date.parse(payment.created_at) > 30 * 60 * 1000 ? 'abandoned?' : payment.status
     }))
   response.json({ payments })
+})
+
+app.post('/api/creator/payments/:reference/credits', creatorAuth, (request, response) => {
+  const reference = String(request.params.reference)
+  const payment = rows('SELECT p.*, s.name AS school FROM payments p LEFT JOIN schools s ON s.id = p.school_id WHERE p.reference = ?', [reference]).at(0)
+  if (!payment) return response.status(404).json({ error: 'Payment not found.' })
+
+  const credits = Number(request.body?.credits)
+  const reason = String(request.body?.reason || '').trim().slice(0, 150)
+  if (!Number.isInteger(credits) || credits < 1 || credits > MAX_CREDITS) {
+    return response.status(400).json({ error: `Enter a whole number of credits from 1 to ${MAX_CREDITS}.` })
+  }
+  if (reason.length < 3) return response.status(400).json({ error: 'Write a short reason for changing the purchase credits.' })
+  if (!['pending', 'success'].includes(payment.status)) return response.status(409).json({ error: 'Only pending or completed purchases can be adjusted.' })
+  if (payment.status === 'success' && payment.target === 'offline') {
+    return response.status(409).json({ error: 'This completed offline purchase may already have been issued as a signed voucher. Use the school credit adjustment instead.' })
+  }
+
+  const change = credits - Number(payment.credits)
+  if (!change) return response.json({ credits, unchanged: true })
+  if (payment.status === 'success' && change < 0 && Math.abs(change) > creditBalance(payment.school_id)) {
+    return response.status(409).json({ error: `Only ${creditBalance(payment.school_id)} unspent credits are available to remove.` })
+  }
+
+  const detail = `${payment.school || '(deleted school)'} purchase ${reference}: ${payment.credits} to ${credits} credits. ${reason}`
+  try {
+    db.run('BEGIN')
+    db.run('UPDATE payments SET credits = ? WHERE reference = ? AND status = ?', [credits, reference, payment.status])
+    if (payment.status === 'success' && change !== 0) {
+      db.run('INSERT INTO credit_ledger (id, school_id, change, reason, reference, created_at) VALUES (?, ?, ?, ?, ?, ?)', [
+        crypto.randomUUID(), payment.school_id, change, `Creator purchase adjustment: ${reason}`, `${reference}:adjustment:${crypto.randomUUID()}`, new Date().toISOString()
+      ])
+    }
+    db.run('INSERT INTO creator_log (id, at, action, details) VALUES (?, ?, ?, ?)', [
+      crypto.randomUUID(), new Date().toISOString(), 'payment-credits', detail.slice(0, 500)
+    ])
+    db.run('COMMIT')
+    persist()
+  } catch (error) {
+    try { db.run('ROLLBACK') } catch { /* transaction may already be closed */ }
+    throw error
+  }
+
+  response.json({ credits, balance: creditBalance(payment.school_id), change })
 })
 
 // Asks Paystack what really happened to a payment, and adds the credits if it was paid.
@@ -1416,12 +2777,92 @@ async function start() {
   db.run('CREATE TABLE IF NOT EXISTS exams (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, title TEXT NOT NULL, subject TEXT NOT NULL, date TEXT NOT NULL, time TEXT NOT NULL, duration INTEGER NOT NULL, questions INTEGER NOT NULL, status TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS questions (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, exam_id TEXT, subject TEXT NOT NULL, text TEXT NOT NULL, options TEXT NOT NULL, answer INTEGER NOT NULL, created_at INTEGER NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, exam_id TEXT NOT NULL, student_id TEXT NOT NULL, score INTEGER NOT NULL, total INTEGER NOT NULL, submitted_at TEXT NOT NULL)')
-  db.run('CREATE TABLE IF NOT EXISTS subject_settings (school_id TEXT NOT NULL, subject TEXT NOT NULL, duration INTEGER NOT NULL DEFAULT 30, approved INTEGER NOT NULL DEFAULT 0, approved_at TEXT, PRIMARY KEY (school_id, subject))')
+  db.run("CREATE TABLE IF NOT EXISTS subject_settings (school_id TEXT NOT NULL, subject TEXT NOT NULL, duration INTEGER NOT NULL DEFAULT 30, approved INTEGER NOT NULL DEFAULT 0, approved_at TEXT, status TEXT NOT NULL DEFAULT 'pending', rejection_reason TEXT, review_comment TEXT, submitted_by TEXT, PRIMARY KEY (school_id, subject))")
   db.run('CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS exam_starts (exam_id TEXT NOT NULL, student_id TEXT NOT NULL, school_id TEXT NOT NULL, started_at INTEGER NOT NULL, PRIMARY KEY (exam_id, student_id))')
   db.run('CREATE TABLE IF NOT EXISTS ai_usage (user_id TEXT NOT NULL, school_id TEXT NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day))')
   db.run('CREATE TABLE IF NOT EXISTS credit_ledger (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, change INTEGER NOT NULL, reason TEXT NOT NULL, reference TEXT, created_at TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS payments (reference TEXT PRIMARY KEY, school_id TEXT NOT NULL, credits INTEGER NOT NULL, amount_kobo INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS prep_users (id TEXT PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL COLLATE NOCASE UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)')
+  const prepUserColumns = rows('PRAGMA table_info(prep_users)').map((column) => column.name)
+  if (!prepUserColumns.includes('phone')) db.run('ALTER TABLE prep_users ADD COLUMN phone TEXT')
+  if (!prepUserColumns.includes('ambassador_id')) db.run('ALTER TABLE prep_users ADD COLUMN ambassador_id TEXT')
+  if (!prepUserColumns.includes('selected_exam')) db.run('ALTER TABLE prep_users ADD COLUMN selected_exam TEXT')
+  if (!prepUserColumns.includes('subject_selection_enabled')) db.run('ALTER TABLE prep_users ADD COLUMN subject_selection_enabled INTEGER NOT NULL DEFAULT 0')
+  if (!prepUserColumns.includes('paid_at')) {
+    db.run('ALTER TABLE prep_users ADD COLUMN paid_at TEXT')
+    db.run('UPDATE prep_users SET paid_at = created_at WHERE paid_at IS NULL')
+  }
+  if (!prepUserColumns.includes('access_until')) {
+    db.run('ALTER TABLE prep_users ADD COLUMN access_until TEXT')
+    db.run('UPDATE prep_users SET access_until = ? WHERE paid_at IS NOT NULL', [addCalendarMonth(new Date()).toISOString()])
+  }
+  db.run(`CREATE TABLE IF NOT EXISTS prep_ambassadors (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    password_hash TEXT NOT NULL,
+    referral_code TEXT NOT NULL UNIQUE,
+    jamb_commission_kobo INTEGER NOT NULL DEFAULT 0,
+    waec_commission_kobo INTEGER NOT NULL DEFAULT 0,
+    neco_commission_kobo INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1
+  )`)
+  db.run('CREATE TABLE IF NOT EXISTS prep_ambassador_referral_codes (code TEXT PRIMARY KEY COLLATE NOCASE, ambassador_id TEXT NOT NULL, created_at TEXT NOT NULL)')
+  db.run('CREATE INDEX IF NOT EXISTS prep_ambassador_referral_codes_owner ON prep_ambassador_referral_codes (ambassador_id)')
+  db.run('INSERT OR IGNORE INTO prep_ambassador_referral_codes (code, ambassador_id, created_at) SELECT referral_code, id, created_at FROM prep_ambassadors')
+  db.run('CREATE TABLE IF NOT EXISTS prep_ambassador_sessions (token_hash TEXT PRIMARY KEY, ambassador_id TEXT NOT NULL, expires_at INTEGER NOT NULL)')
+  db.run(`CREATE TABLE IF NOT EXISTS prep_referral_commissions (
+    id TEXT PRIMARY KEY,
+    payment_reference TEXT NOT NULL UNIQUE,
+    ambassador_id TEXT NOT NULL,
+    prep_user_id TEXT NOT NULL,
+    exam TEXT NOT NULL,
+    amount_kobo INTEGER NOT NULL,
+    paid_at TEXT NOT NULL
+  )`)
+  db.run(`CREATE TABLE IF NOT EXISTS prep_ambassador_withdrawals (
+    id TEXT PRIMARY KEY,
+    ambassador_id TEXT NOT NULL,
+    amount_kobo INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+    requested_at TEXT NOT NULL,
+    processed_at TEXT,
+    bank_name TEXT,
+    account_name TEXT,
+    account_number TEXT
+  )`)
+  const prepWithdrawalColumns = rows('PRAGMA table_info(prep_ambassador_withdrawals)').map((column) => column.name)
+  if (!prepWithdrawalColumns.includes('bank_name')) db.run('ALTER TABLE prep_ambassador_withdrawals ADD COLUMN bank_name TEXT')
+  if (!prepWithdrawalColumns.includes('account_name')) db.run('ALTER TABLE prep_ambassador_withdrawals ADD COLUMN account_name TEXT')
+  if (!prepWithdrawalColumns.includes('account_number')) db.run('ALTER TABLE prep_ambassador_withdrawals ADD COLUMN account_number TEXT')
+  db.run(`CREATE TABLE IF NOT EXISTS prep_ambassador_withdrawal_items (
+    withdrawal_id TEXT NOT NULL,
+    commission_id TEXT NOT NULL,
+    PRIMARY KEY (withdrawal_id, commission_id)
+  )`)
+  db.run('CREATE INDEX IF NOT EXISTS prep_users_ambassador ON prep_users (ambassador_id)')
+  db.run('CREATE INDEX IF NOT EXISTS prep_referral_commissions_ambassador_date ON prep_referral_commissions (ambassador_id, paid_at)')
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS prep_ambassador_one_pending_withdrawal ON prep_ambassador_withdrawals (ambassador_id) WHERE status = 'pending'")
+  db.run('CREATE INDEX IF NOT EXISTS prep_ambassador_withdrawals_status_date ON prep_ambassador_withdrawals (status, requested_at)')
+  db.run('CREATE TABLE IF NOT EXISTS prep_exam_access (user_id TEXT NOT NULL, exam TEXT NOT NULL, access_until TEXT NOT NULL, PRIMARY KEY (user_id, exam))')
+  db.run('CREATE TABLE IF NOT EXISTS prep_sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS prep_user_exam_subjects (user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, added_at TEXT NOT NULL, PRIMARY KEY (user_id, exam, subject))')
+  db.run('CREATE TABLE IF NOT EXISTS prep_questions (id TEXT PRIMARY KEY, exam TEXT NOT NULL, subject TEXT NOT NULL, question TEXT NOT NULL, options TEXT NOT NULL, answer INTEGER NOT NULL, explanation TEXT, year INTEGER, created_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)')
+  const prepQuestionColumns = rows('PRAGMA table_info(prep_questions)').map((column) => column.name)
+  if (!prepQuestionColumns.includes('active')) db.run('ALTER TABLE prep_questions ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
+  db.run('CREATE INDEX IF NOT EXISTS prep_questions_exam_subject ON prep_questions (exam, subject)')
+  db.run('CREATE TABLE IF NOT EXISTS prep_practice_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, question_ids TEXT NOT NULL, started_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, completed_at TEXT)')
+  db.run('CREATE TABLE IF NOT EXISTS prep_attempts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, score INTEGER NOT NULL, total INTEGER NOT NULL, created_at TEXT NOT NULL)')
+  db.run('CREATE TABLE IF NOT EXISTS prep_payments (reference TEXT PRIMARY KEY, user_id TEXT NOT NULL, email TEXT NOT NULL, amount_kobo INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT)')
+  const prepPaymentColumns = rows('PRAGMA table_info(prep_payments)').map((column) => column.name)
+  if (!prepPaymentColumns.includes('exam')) db.run('ALTER TABLE prep_payments ADD COLUMN exam TEXT')
+  for (const column of ["method TEXT NOT NULL DEFAULT 'paystack'", 'note TEXT', 'manual_reference TEXT']) {
+    if (!prepPaymentColumns.includes(column.split(' ')[0])) db.run(`ALTER TABLE prep_payments ADD COLUMN ${column}`)
+  }
+  db.run('CREATE INDEX IF NOT EXISTS prep_attempts_user_date ON prep_attempts (user_id, created_at)')
   db.run('CREATE TABLE IF NOT EXISTS school_aliases (slug TEXT PRIMARY KEY, school_id TEXT NOT NULL)')
   db.run('CREATE TABLE IF NOT EXISTS support_tickets (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, user_id TEXT NOT NULL, user_name TEXT NOT NULL, subject TEXT NOT NULL, category TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, admin_unread INTEGER NOT NULL DEFAULT 0, creator_unread INTEGER NOT NULL DEFAULT 1)')
   db.run('CREATE TABLE IF NOT EXISTS support_messages (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)')
@@ -1435,11 +2876,17 @@ async function start() {
   for (const column of ['email TEXT', 'credits INTEGER NOT NULL DEFAULT 0']) {
     try { db.run(`ALTER TABLE schools ADD COLUMN ${column}`) } catch { /* column already exists */ }
   }
+  for (const column of ["status TEXT NOT NULL DEFAULT 'pending'", 'rejection_reason TEXT', 'review_comment TEXT', 'submitted_by TEXT']) {
+    try { db.run(`ALTER TABLE subject_settings ADD COLUMN ${column}`) } catch { /* column already exists */ }
+  }
+  db.run("UPDATE subject_settings SET status = CASE WHEN approved = 1 THEN 'approved' ELSE 'pending' END WHERE status IS NULL OR status = ''")
   support = createSupport({ rows, run })
   sync = createSync({ rows, exec: (sql, values) => db.run(sql, values), persist })
   sync.migrate()
   if (!OFFLINE) for (const school of rows('SELECT id FROM schools WHERE id NOT IN (SELECT DISTINCT school_id FROM credit_ledger)')) addCredits(school.id, STARTER_CREDITS, 'Free starter credits')
   db.run('DELETE FROM sessions WHERE expires_at < ?', [Date.now()])
+  db.run('DELETE FROM prep_sessions WHERE expires_at < ?', [Date.now()])
+  db.run('DELETE FROM prep_ambassador_sessions WHERE expires_at < ?', [Date.now()])
   persist()
   if (OFFLINE) { setTimeout(() => void syncAllSchools(), 30000); setInterval(() => void syncAllSchools(), 2 * 60 * 1000) }
   app.listen(PORT, '0.0.0.0', () => {

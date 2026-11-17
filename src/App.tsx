@@ -5,32 +5,42 @@ import { NativeBiometric } from '@capgo/capacitor-native-biometric'
 import Approvals from './Approvals'
 import AdminRegistration from './AdminRegistration'
 import AccountsPanel from './AccountsPanel'
+import ArchivedQuestions from './ArchivedQuestions'
 import ExamSchedule from './ExamSchedule'
 import PublicHome from './PublicHome'
 import SubjectQuestionWizard from './SubjectQuestionWizard'
+import SchoolAppearance from './SchoolAppearance'
 import TimedExamRunner from './TimedExamRunner'
 import CreatorPage from './CreatorPage'
+import PrepPlatform from './PrepPlatform'
+import PrepAmbassador from './PrepAmbassador'
 import DashboardShell from './DashboardShell'
 import SupportWidget from './SupportWidget'
 import { SlipSheet } from './ResultSlips'
 import { RoleChooser, RoleSignIn } from './RoleSignIn'
+import WelcomeLoading from './WelcomeLoading'
+import useMinimumWelcomeDuration from './useMinimumWelcomeDuration'
 import { schoolRolePath } from './schoolLinks'
 import { API_BASE } from './apiBase'
 import './App.css'
 import './mobile.css'
+import PasswordInput from './PasswordInput'
 
 type Role = 'Admin' | 'Teacher' | 'Student'
 type EntryPage = 'home' | 'login' | 'register' | 'sms'
-type Tab = 'Overview' | 'Accounts' | 'Schedule' | 'Approvals' | 'Questions' | 'My exams' | 'Results' | 'Billing' | 'Profile'
+type Tab = 'Overview' | 'Accounts' | 'Teachers' | 'Students' | 'Schedule' | 'Approvals' | 'Archived' | 'Questions' | 'My exams' | 'Results' | 'Billing' | 'Appearance' | 'Profile'
+const roleValue = (value: string | null | undefined): Role | null => value?.toLowerCase() === 'admin' ? 'Admin' : value?.toLowerCase() === 'teacher' ? 'Teacher' : value?.toLowerCase() === 'student' ? 'Student' : null
+const appRole: Role | null = roleValue(new URLSearchParams(window.location.search).get('appRole')) || roleValue(import.meta.env.VITE_APP_ROLE)
 type Account = { id: string; role: Role; name: string; username?: string; studentId?: string; classSection?: string; schoolName?: string; schoolSlug?: string }
 type Exam = { id: string; title: string; classSection?: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number; taken?: number }
-type Question = { id: string; examId?: string; subject: string; text: string; options: string[]; answer?: number }
+type Question = { id: string; examId?: string; subject: string; text: string; options: string[]; answer?: number; createdAt?: number }
 type Result = { id: string; exam_title: string; student_name: string; student_id: string; score: number; total: number; submitted_at: string; time_spent?: number | null; subject?: string | null; exam_date?: string | null; exam_time?: string | null; class_section?: string | null }
-type SubjectSetting = { subject: string; duration: number; approved: number; approved_at?: string }
-type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: Result[]; subjects: SubjectSetting[]; credits?: number; examsOpen?: boolean; aiReady?: boolean; aiRemaining?: number; offline?: boolean }
+type SubjectSetting = { subject: string; duration: number; approved: number; approved_at?: string; status: 'pending' | 'approved' | 'rejected'; rejection_reason?: string; review_comment?: string; submitted_by?: string }
+type TeacherSubject = SubjectSetting & { canEdit: boolean; questions: Question[] }
+type Data = { users: Account[]; exams: Exam[]; questions: Question[]; results: Result[]; subjects: SubjectSetting[]; teacherSubjects: TeacherSubject[]; credits?: number; examsOpen?: boolean; aiReady?: boolean; aiRemaining?: number; offline?: boolean; brandColor?: string }
 type School = { name: string; slug: string }
 
-const emptyData: Data = { users: [], exams: [], questions: [], results: [], subjects: [] }
+const emptyData: Data = { users: [], exams: [], questions: [], results: [], subjects: [], teacherSubjects: [] }
 const TOKEN_KEY = 'timpriest-token'
 const STUDENT_EXAM_ACCESS_ERROR = 'YOU ARE NOT AUTHORIZED TO ENTER THE EXAM DASHBOARD'
 
@@ -63,21 +73,25 @@ function readRoute(): Route {
 }
 
 function readEntryPage(): EntryPage {
+  if (appRole) return 'login'
   const first = window.location.pathname.split('/').filter(Boolean)[0]?.toLowerCase()
   if (first === 'sms') return 'sms'
   const route = readRoute()
   return route.slug || route.role ? 'login' : 'home'
 }
 
+function preserveAppRole(url: string) {
+  if (!appRole) return url
+  const target = new URL(url, window.location.origin)
+  target.searchParams.set('appRole', appRole.toLowerCase())
+  return `${target.pathname}${target.search}${target.hash}`
+}
+
 function showSchoolAddress(slug?: string, role?: string) {
   if (!slug || Capacitor.isNativePlatform()) return
   const target = role ? schoolRolePath(slug, role) : `/cbt/${encodeURIComponent(slug)}`
-  if (window.location.pathname !== target) window.history.replaceState(null, '', target)
-}
-
-function greeting() {
-  const hour = new Date().getHours()
-  return hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
+  const next = preserveAppRole(target)
+  if (`${window.location.pathname}${window.location.search}` !== next) window.history.replaceState(null, '', next)
 }
 
 async function api<T>(path: string, token: string | null, options: RequestInit = {}): Promise<T> {
@@ -88,21 +102,22 @@ async function api<T>(path: string, token: string | null, options: RequestInit =
     if (token && response.status === 403 && error.error === STUDENT_EXAM_ACCESS_ERROR) {
       window.dispatchEvent(new CustomEvent('timpriest-expired', { detail: { message: error.error } }))
     }
+
     throw new Error(error.error || 'Request failed.')
   }
   return response.status === 204 ? undefined as T : response.json()
 }
 
-function scheduledExamStart(exam: Pick<Exam, 'date' | 'time'>) {
-  return new Date(`${exam.date}T${exam.time}:00`).getTime()
-}
-
-function scheduledExamDuration(exam: Pick<Exam, 'duration' | 'subject_duration'>) {
-  return exam.subject_duration > 0 ? exam.subject_duration : exam.duration
+function greeting() {
+  const hour = new Date().getHours()
+  return hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
 }
 
 function AppInner() {
-  const [route, setRoute] = useState<Route>(readRoute)
+  const [route, setRoute] = useState<Route>(() => {
+    const initial = readRoute()
+    return appRole ? { ...initial, role: appRole } : initial
+  })
   const schoolSlug = route.slug
   const [school, setSchool] = useState<School | null>(null)
   const [schoolError, setSchoolError] = useState('')
@@ -111,10 +126,11 @@ function AppInner() {
   const [token, setToken] = useState<string | null>(null)
   const [restoring, setRestoring] = useState(() => Boolean(readToken()))
   const [data, setData] = useState<Data>(emptyData)
-  const [loginRole, setLoginRole] = useState<Role>(route.role || 'Admin')
+  const [loginRole, setLoginRole] = useState<Role>(route.role || appRole || 'Admin')
   const [loginError, setLoginError] = useState('')
   const [tab, setTab] = useState<Tab>(() => new URLSearchParams(window.location.search).has('reference') ? 'Billing' : 'Overview')
   const [notice, setNotice] = useState('')
+  const lastReviewStatuses = useRef<Map<string, { status: string; rejection_reason?: string; review_comment?: string }> | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [showAccountForm, setShowAccountForm] = useState(false)
   const [showExamForm, setShowExamForm] = useState(false)
@@ -146,6 +162,7 @@ function AppInner() {
   const [biometricSaved, setBiometricSaved] = useState(false)
   const [enableBiometric, setEnableBiometric] = useState(false)
   const [biometricLoading, setBiometricLoading] = useState(false)
+  const showWelcome = useMinimumWelcomeDuration(restoring || Boolean(session && loading))
 
   const biometricServer = `timpriest-edu-${loginRole.toLowerCase()}`
 
@@ -162,21 +179,21 @@ function AppInner() {
 
   function goTo(next: Route) {
     setRoute(next); setEntryPage('login'); setLoginError('')
-    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', next.slug && next.role ? schoolRolePath(next.slug, next.role) : '/' + [next.slug, next.role?.toLowerCase()].filter(Boolean).map((part) => encodeURIComponent(part as string)).join('/'))
+    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', preserveAppRole(next.slug && next.role ? schoolRolePath(next.slug, next.role) : '/' + [next.slug, next.role?.toLowerCase()].filter(Boolean).map((part) => encodeURIComponent(part as string)).join('/')))
   }
 
   function goToProduct(product: 'cbt' | 'sms') {
     setRoute({ slug: '', role: null })
     setEntryPage(product === 'cbt' ? 'login' : 'sms')
     setLoginError('')
-    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', `/${product}`)
+    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', preserveAppRole(`/${product}`))
   }
 
   function goHome() {
     setRoute({ slug: '', role: null })
     setEntryPage('home')
     setLoginError('')
-    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', '/')
+    if (!Capacitor.isNativePlatform()) window.history.pushState(null, '', preserveAppRole('/'))
   }
 
   useEffect(() => {
@@ -189,7 +206,7 @@ function AppInner() {
           setRoute((current) => ({ ...current, slug: found.slug }))
           if (!Capacitor.isNativePlatform()) {
             const currentRole = readRoute().role
-            window.history.replaceState(null, '', currentRole ? schoolRolePath(found.slug, currentRole) : `/cbt/${encodeURIComponent(found.slug)}`)
+            window.history.replaceState(null, '', preserveAppRole(currentRole ? schoolRolePath(found.slug, currentRole) : `/cbt/${encodeURIComponent(found.slug)}`))
           }
         }
       })
@@ -203,12 +220,15 @@ function AppInner() {
     void (async () => {
       try {
         const result = await api<{ user: Account }>('/me', stored)
+        if (!active) return
+        setSession(result.user)
         const loaded = await api<Data>('/data', stored)
         if (!active) return
         setToken(stored); setSession(result.user); setData(loaded)
         showSchoolAddress(result.user.schoolSlug, result.user.role)
       } catch (error) {
         saveToken(null)
+        setSession(null)
         if (error instanceof Error && error.message === STUDENT_EXAM_ACCESS_ERROR) {
           setRoute((current) => ({ ...current, role: 'Student' }))
           setEntryPage('login')
@@ -255,15 +275,59 @@ function AppInner() {
   }, [biometricServer])
 
   const refresh = async (activeToken = token) => { if (!activeToken) return; setData(await api<Data>('/data', activeToken)) }
+  const saveSchoolColor = async (color: string) => {
+    const result = await api<{ brandColor: string }>('/school/appearance', token, { method: 'PUT', body: JSON.stringify({ color }) })
+    setData((current) => ({ ...current, brandColor: result.brandColor }))
+    showNotice('School color saved and applied across the school dashboards.')
+  }
+  useEffect(() => {
+    if (!token || activeExam) return
+    const syncData = async () => {
+      try { setData(await api<Data>('/data', token)) }
+      catch (error) { console.error('Automatic dashboard data refresh failed.', error) }
+    }
+    const interval = window.setInterval(() => void syncData(), 15000)
+    return () => window.clearInterval(interval)
+  }, [token, activeExam])
   const showNotice = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3000) }
-  const beginExam = (exam: Exam) => {
+  useEffect(() => {
+    if (session?.role !== 'Teacher') { lastReviewStatuses.current = null; return }
+    const statuses = new Map(data.subjects.map((subject) => [subject.subject, { status: subject.status, rejection_reason: subject.rejection_reason, review_comment: subject.review_comment }]))
+    if (!lastReviewStatuses.current) { lastReviewStatuses.current = statuses; return }
+    const updates: string[] = []
+    for (const subject of data.subjects) {
+      const previous = lastReviewStatuses.current.get(subject.subject)
+      const statusChanged = previous && previous.status !== subject.status
+      const rejectionCommentChanged = previous && subject.status === 'rejected' && previous.rejection_reason !== subject.rejection_reason
+      const approvalCommentChanged = previous && subject.status === 'approved' && previous.review_comment !== subject.review_comment
+      if (previous && (statusChanged || rejectionCommentChanged || approvalCommentChanged) && (subject.status === 'approved' || subject.status === 'rejected')) {
+        updates.push(subject.status === 'approved'
+          ? `${subject.subject} questions have been approved.${subject.review_comment ? ` Admin comment: ${subject.review_comment}` : ''}`
+          : `${subject.subject} was returned for corrections${subject.rejection_reason ? `: ${subject.rejection_reason}` : '.'}`)
+        if (subject.status === 'rejected') setTab('Questions')
+      }
+    }
+    lastReviewStatuses.current = statuses
+    if (updates.length) showNotice(updates.join(' '))
+  }, [data.subjects, session?.role])
+  // The server saves the moment the student starts, so their full time always counts from that moment.
+  const beginExam = async (exam: Exam) => {
     if (data.examsOpen === false) { showNotice('Exams are unavailable because this school has run out of credits. Please tell your school admin.'); return }
-    const startsAt = scheduledExamStart(exam)
-    const endsAt = startsAt + scheduledExamDuration(exam) * 60000
-    if (Date.now() < startsAt) { showNotice(`This exam is scheduled to start at ${exam.time}.`); return }
-    if (!Number.isFinite(endsAt) || Date.now() >= endsAt) { showNotice('The scheduled time for this exam has ended.'); return }
-    examStartedAt.current = startsAt
-    setActiveExam(exam)
+    try {
+      const result = await api<{ startedAt: number; endsAt: number; serverNow: number; expired: boolean }>(`/exams/${exam.id}/start`, token, { method: 'POST' })
+      if (result.expired) {
+        // The student's own time already ran out (for example they left and came back): submit what they have, which is nothing.
+        try { await api('/submissions', token, { method: 'POST', body: JSON.stringify({ examId: exam.id, answers: {} }) }) } catch { /* already submitted */ }
+        showNotice('Your time for this exam has ended, so it was submitted automatically.')
+        await refresh()
+        return
+      }
+      // Use the school server's clock for the timer, so a wrong clock on the computer cannot give extra or less time.
+      examStartedAt.current = result.startedAt - (result.serverNow - Date.now())
+      setActiveExam(exam)
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Could not start the exam.')
+    }
   }
 
   function startSession(result: { token: string; user: Account }) {
@@ -304,12 +368,12 @@ function AppInner() {
 
   function logout() {
     const slug = session?.schoolSlug
-    const goToSchool = () => { if (slug && !Capacitor.isNativePlatform()) window.location.assign(schoolRolePath(slug, session?.role || 'student')) }
+    const goToSchool = () => { if (slug && !Capacitor.isNativePlatform()) window.location.assign(preserveAppRole(schoolRolePath(slug, session?.role || 'student'))) }
     if (token) void api('/logout', token, { method: 'POST' }).catch(() => undefined).finally(goToSchool)
     else goToSchool()
     saveToken(null)
     setToken(null); setSession(null); setActiveExam(null); setSubmitted(false); setData(emptyData); setMenuOpen(false); setEntryPage('login')
-    if (!Capacitor.isNativePlatform() && session?.schoolSlug) window.location.assign(schoolRolePath(session.schoolSlug, session.role))
+    if (!Capacitor.isNativePlatform() && session?.schoolSlug) window.location.assign(preserveAppRole(schoolRolePath(session.schoolSlug, session.role)))
   }
 
   async function addAccount(event: FormEvent<HTMLFormElement>) {
@@ -317,15 +381,62 @@ function AppInner() {
     try { await api('/users', token, { method: 'POST', body: JSON.stringify({ role, name: String(values.get('name')).trim(), username: String(values.get('username') || '').trim(), password: String(values.get('password') || ''), studentId: String(values.get('studentId') || '').trim().toUpperCase(), classSection: String(values.get('classSection') || '').trim() }) }); setShowAccountForm(false); await refresh(); showNotice(`${role} account created.`) } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not create account.') }
   }
 
+  async function updateAccount(account: Account, values: { name: string; username: string; password: string; studentId: string; classSection: string }): Promise<boolean> {
+    try {
+      await api(`/users/${account.id}`, token, { method: 'PUT', body: JSON.stringify(values) })
+      await refresh()
+      showNotice(`${account.role} account updated.`)
+      return true
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Could not update account.')
+      return false
+    }
+  }
+
   async function deleteAccount(account: Account) { if (!window.confirm(`Delete ${account.name}'s ${account.role.toLowerCase()} account?`)) return; try { await api(`/users/${account.id}`, token, { method: 'DELETE' }); await refresh(); showNotice(`${account.name}'s account was deleted.`) } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not delete account.') } }
 
   async function addExam(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const values = new FormData(event.currentTarget); try { await api('/exams', token, { method: 'POST', body: JSON.stringify({ title: values.get('title'), subject: values.get('subject'), date: values.get('date'), time: values.get('time'), duration: values.get('duration'), questions: values.get('questions'), classSection: values.get('classSection') || '' }) }); setShowExamForm(false); await refresh(); showNotice('Exam schedule published.') } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not schedule exam.') } }
 
+  async function scheduleArchivedExam(details: { title: string; subject: string; date: string; time: string; duration: number; classSection: string; selectedQuestionIds: string[] }): Promise<boolean> {
+    try {
+      await api('/exams', token, { method: 'POST', body: JSON.stringify({ ...details, questions: details.selectedQuestionIds.length }) })
+      await refresh()
+      showNotice(`${details.title} scheduled with ${details.selectedQuestionIds.length} archived questions.`)
+      return true
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Could not schedule archived questions.')
+      return false
+    }
+  }
+
   async function deleteExam(exam: Exam) { if (!window.confirm(`Delete the ${exam.status.toLowerCase()} exam "${exam.title}"?`)) return; try { await api(`/exams/${exam.id}`, token, { method: 'DELETE' }); await refresh(); showNotice(`${exam.title} was deleted.`) } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not delete exam.') } }
 
-  async function approveSubject(subject: string) { try { await api(`/subjects/${encodeURIComponent(subject)}/approve`, token, { method: 'POST' }); await refresh(); showNotice(`${subject} questions approved for students.`) } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not approve subject.') } }
+  async function approveSubject(subject: string, comment: string): Promise<boolean> {
+    try {
+      await api(`/subjects/${encodeURIComponent(subject)}/approve`, token, { method: 'POST', body: JSON.stringify({ comment }) })
+      await refresh()
+      showNotice(`${subject} questions approved for students.`)
+      return true
+    } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not approve subject.'); return false }
+  }
 
-  async function deleteSubject(subject: string) { if (!window.confirm(`Delete all questions for ${subject}? This cannot be undone.`)) return; try { await api(`/subjects/${encodeURIComponent(subject)}`, token, { method: 'DELETE' }); await refresh(); showNotice(`${subject} question set was deleted.`) } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not delete question set.') } }
+  async function rejectSubject(subject: string, reason: string): Promise<boolean> {
+    try {
+      await api(`/subjects/${encodeURIComponent(subject)}/reject`, token, { method: 'POST', body: JSON.stringify({ reason }) })
+      await refresh()
+      showNotice(`${subject} returned to the teacher for corrections.`)
+      return true
+    } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not reject subject.'); return false }
+  }
+
+  async function renameSubject(subject: string, name: string): Promise<boolean> {
+    try {
+      await api(`/subjects/${encodeURIComponent(subject)}/name`, token, { method: 'PUT', body: JSON.stringify({ name }) })
+      await refresh()
+      showNotice(`Subject renamed to ${name.trim()}.`)
+      return true
+    } catch (error) { showNotice(error instanceof Error ? error.message : 'Could not rename subject.'); return false }
+  }
 
   // Returns true once the server has accepted the exam. autoLogout is false when the student chose to log out themselves.
   async function submitExam(answers: Record<string, number>, autoLogout = true): Promise<boolean> {
@@ -380,15 +491,16 @@ function AppInner() {
         error={loginError}
         onSubmit={login}
         onSwitchRole={(role) => goTo({ slug: route.slug, role })}
+        allowRoleSwitch={!appRole}
         onSchoolLink={(link) => goTo({ slug: cleanLink(link), role: 'Student' })}
         biometric={{ available: biometricAvailable, saved: biometricSaved, enable: enableBiometric, setEnable: setEnableBiometric, loading: biometricLoading, onSignIn: loginWithBiometric }}
       />
     )
   }
 
-  if (restoring) return <div className="login-page"><div className="login-panel"><div className="login-box"><p className="login-subtitle">Loading...</p></div></div></div>
-  if (!session && entryPage === 'home') return <PublicHome onSignIn={() => goToProduct('cbt')} onRegister={() => { goToProduct('cbt'); setEntryPage('register') }} onSms={() => goToProduct('sms')} onHome={goHome} />
-  if (!session && entryPage === 'sms') return <PublicHome onSignIn={() => goToProduct('cbt')} onRegister={() => { goToProduct('cbt'); setEntryPage('register') }} onSms={() => goToProduct('sms')} onHome={goHome} journey="sms" />
+  if (showWelcome) return <WelcomeLoading name={session ? (session.role === 'Teacher' ? session.name : session.schoolName || 'YOUR SCHOOL') : ''} />
+  if (!session && entryPage === 'home') return <PublicHome onSignIn={() => goToProduct('cbt')} onRegister={() => { goToProduct('cbt'); setEntryPage('register') }} onSms={() => goToProduct('sms')} onPrep={() => window.location.assign('/prep')} onHome={goHome} />
+  if (!session && entryPage === 'sms') return <PublicHome onSignIn={() => goToProduct('cbt')} onRegister={() => { goToProduct('cbt'); setEntryPage('register') }} onSms={() => goToProduct('sms')} onPrep={() => window.location.assign('/prep')} onHome={goHome} journey="sms" />
   if (!session && entryPage === 'register') return <AdminRegistration onBack={goHome} onComplete={(slug) => { if (Capacitor.isNativePlatform()) setEntryPage('login'); else window.location.assign(schoolRolePath(slug, 'admin')) }} />
   if (!session) return renderLogin()
 
@@ -396,13 +508,12 @@ function AppInner() {
   const isTeacher = session.role === 'Teacher'
   const isStudent = session.role === 'Student'
   const centre = session.schoolName || 'Your school'
-  const firstName = session.name.split(' ')[0]
-  const navItems: Tab[] = isAdmin ? ['Overview', 'Accounts', 'Schedule', 'Approvals', 'Results', 'Billing', 'Profile'] : isTeacher ? ['Overview', 'Questions', 'My exams', 'Profile'] : ['Overview', 'My exams']
+  const navItems: Tab[] = isAdmin ? ['Overview', 'Accounts', 'Teachers', 'Students', 'Schedule', 'Approvals', 'Archived', 'Results', 'Billing', 'Appearance', 'Profile'] : isTeacher ? ['Overview', 'Questions', 'My exams', 'Profile'] : ['Overview', 'My exams']
   const examQuestions = activeExam ? data.questions.filter((question) => question.examId === activeExam.id || (!question.examId && question.subject === activeExam.subject)) : []
 
   return (
     <>
-    <DashboardShell examMode={Boolean(activeExam) && !submitted} role={session.role} centre={centre} userName={session.name} detail={isStudent ? session.classSection : undefined} items={navItems} tab={tab} onTab={(item) => setTab(item as Tab)} onLogout={() => void logoutClicked()} menuOpen={menuOpen} onMenu={setMenuOpen}>
+    <DashboardShell examMode={Boolean(activeExam) && !submitted} role={session.role} centre={centre} userName={session.name} detail={isStudent ? session.classSection : undefined} items={navItems} tab={tab} onTab={(item) => setTab(item as Tab)} onLogout={() => void logoutClicked()} menuOpen={menuOpen} onMenu={setMenuOpen} brandColor={data.brandColor}>
       <section className={tab === 'Results' ? 'content-wrap results-print-scope' : 'content-wrap'}>
         {notice && <div className="toast">✓ {notice}</div>}
         {activeExam
@@ -411,21 +522,30 @@ function AppInner() {
             <div className="intro">
               <div>
                 <p className="eyebrow">{isAdmin ? 'Administrator console' : isTeacher ? 'Teacher workspace' : 'Student portal'}</p>
-                <h1>{isAdmin ? `${greeting()}, ${firstName}.` : `Welcome back, ${firstName}.`}</h1>
+                <h1>{isAdmin ? `${greeting()}, ${session.name.split(' ')[0]}.` : `Welcome back, ${session.name.split(' ')[0]}.`}</h1>
                 <p className="intro-copy">{isAdmin ? 'Manage your people, exams, schedules, and published results.' : isTeacher ? 'Prepare subject questions one step at a time.' : 'Your exam schedule is ready when you are.'}</p>
               </div>
               {isAdmin && <button className="primary-button" onClick={() => { setTab('Schedule'); setShowExamForm(true) }}>+ Create exam</button>}
               {isTeacher && <button className="primary-button" onClick={() => setTab('Questions')}>+ Set questions</button>}
               {isStudent && <button className="primary-button" onClick={() => { const next = data.exams.find((exam) => exam.status === 'Scheduled' && !exam.taken); setTab('My exams'); if (next) beginExam(next); else showNotice('No exam is available to start right now.') }}>Enter exam →</button>}
             </div>
+            {isTeacher && data.subjects.length > 0 && <button className="teacher-review-summary" type="button" onClick={() => setTab('Questions')}>
+              <strong>Subject review progress</strong>
+              <span>{data.subjects.filter((item) => item.status === 'pending').length} pending</span>
+              <span>{data.subjects.filter((item) => item.status === 'approved').length} approved</span>
+              <span>{data.subjects.filter((item) => item.status === 'rejected').length} returned for corrections</span>
+              <small>Open questions to review updates and make corrections →</small>
+            </button>}
             {tab === 'Overview' && <Overview session={session} data={data} centre={centre} setTab={setTab} setActiveExam={beginExam} token={token} showNotice={showNotice} />}
-            {tab === 'Accounts' && isAdmin && <AccountsPanel accounts={data.users} token={token} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
+            {['Accounts', 'Teachers', 'Students'].includes(tab) && isAdmin && <AccountsPanel accounts={data.users} token={token} selectedRole={tab === 'Teachers' ? 'Teacher' : tab === 'Students' ? 'Student' : null} onSelectRole={(role) => setTab(role === 'Teacher' ? 'Teachers' : 'Students')} showForm={showAccountForm} setShowForm={setShowAccountForm} addAccount={addAccount} updateAccount={updateAccount} deleteAccount={deleteAccount} refresh={refresh} showNotice={showNotice} />}
             {tab === 'Schedule' && isAdmin && <ExamSchedule exams={data.exams} classes={Array.from(new Set(data.users.filter((account) => account.role === 'Student' && account.classSection).map((account) => account.classSection as string)))} showForm={showExamForm} setShowForm={setShowExamForm} addExam={addExam} deleteExam={deleteExam} />}
-            {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} token={token} refresh={refresh} showNotice={showNotice} aiReady={data.aiReady} aiRemaining={data.aiRemaining} />}
+            {tab === 'Questions' && isTeacher && <SubjectQuestionWizard questions={data.questions} exams={data.exams} submissions={data.teacherSubjects} token={token} refresh={refresh} showNotice={showNotice} aiReady={data.aiReady} aiRemaining={data.aiRemaining} />}
             {tab === 'My exams' && <ExamList exams={data.exams} student={isStudent} centre={centre} start={(exam) => { beginExam(exam); setSelectedAnswers({}); setSubmitted(false) }} />}
-            {tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} approve={approveSubject} deleteSubject={deleteSubject} />}
+            {tab === 'Approvals' && isAdmin && <Approvals subjects={data.subjects} questions={data.questions} approve={approveSubject} reject={rejectSubject} rename={renameSubject} />}
+            {tab === 'Archived' && isAdmin && <ArchivedQuestions questions={data.questions} exams={data.exams} onSchedule={scheduleArchivedExam} showNotice={showNotice} />}
             {tab === 'Results' && isAdmin && <Results results={data.results} schoolName={centre} />}
             {tab === 'Billing' && isAdmin && (data.offline ? <OfflineBilling token={token} showNotice={showNotice} refresh={refresh} /> : <Billing token={token} showNotice={showNotice} refresh={refresh} />)}
+            {tab === 'Appearance' && isAdmin && <SchoolAppearance color={data.brandColor || '#216445'} onSave={saveSchoolColor} />}
             {tab === 'Profile' && !isStudent && <Profile session={session} token={token} showNotice={showNotice} />}
           </>}
       </section>
@@ -466,9 +586,9 @@ function Profile({ session, token, showNotice }: { session: Account; token: stri
         <h3>Change password</h3>
         <p>Use at least 6 characters.</p>
         <form className="profile-form" onSubmit={submit}>
-          <label>Current password<input name="currentPassword" type="password" autoComplete="current-password" required /></label>
-          <label>New password<input name="newPassword" type="password" minLength={6} autoComplete="new-password" required /></label>
-          <label>Confirm new password<input name="confirmPassword" type="password" minLength={6} autoComplete="new-password" required /></label>
+          <label>Current password<PasswordInput name="currentPassword" autoComplete="current-password" required /></label>
+          <label>New password<PasswordInput name="newPassword" minLength={6} autoComplete="new-password" required /></label>
+          <label>Confirm new password<PasswordInput name="confirmPassword" minLength={6} autoComplete="new-password" required /></label>
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Saving...' : 'Change password'}</button>
         </form>
@@ -601,7 +721,7 @@ function OfflineBilling({ token, showNotice, refresh }: { token: string | null; 
             <form className="profile-form" onSubmit={link}>
               <label>Online school link name<input value={slug} onChange={(event) => setSlug(event.target.value)} placeholder="e.g. northbridge-school" required /></label>
               <label>Online admin username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="off" required /></label>
-              <label>Online admin password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="off" required /></label>
+              <label>Online admin password<PasswordInput value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="off" required /></label>
               <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Linking...' : 'Link online account'}</button>
             </form>
           </>
@@ -800,6 +920,8 @@ function ConnectedNow({ token, showNotice }: { token: string | null; showNotice:
 
 function App() {
   if (window.location.pathname.replace(/\/+$/, '') === '/creator') return <CreatorPage /> // the owner's tools, only on the website
+  if (window.location.pathname.replace(/\/+$/, '') === '/prep/ambassador') return <PrepAmbassador />
+  if (window.location.pathname.replace(/\/+$/, '') === '/prep') return <PrepPlatform />
   return <><AppInner /><ConnectionBadge /></>
 }
 

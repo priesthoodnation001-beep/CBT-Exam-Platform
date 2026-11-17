@@ -25,6 +25,10 @@ module.exports = function createSync({ rows, exec, persist }) {
       try { exec(`ALTER TABLE ${table} ADD COLUMN updated_at TEXT`) } catch { /* column already exists */ }
       exec(`UPDATE ${table} SET updated_at = ? WHERE updated_at IS NULL`, [new Date().toISOString()])
     }
+    for (const column of ["status TEXT NOT NULL DEFAULT 'pending'", 'rejection_reason TEXT', 'review_comment TEXT', 'submitted_by TEXT']) {
+      try { exec(`ALTER TABLE subject_settings ADD COLUMN ${column}`) } catch { /* column already exists */ }
+    }
+    exec("UPDATE subject_settings SET status = 'approved' WHERE approved = 1 AND status = 'pending'")
     try { exec('ALTER TABLE exams ADD COLUMN class_section TEXT') } catch { /* column already exists */ }
     try { exec('ALTER TABLE submissions ADD COLUMN time_spent INTEGER') } catch { /* column already exists */ }
     exec('CREATE TABLE IF NOT EXISTS tombstones (school_id TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, deleted_at TEXT NOT NULL, PRIMARY KEY (school_id, kind, key))')
@@ -48,7 +52,7 @@ module.exports = function createSync({ rows, exec, persist }) {
     return {
       users: rows(`SELECT id, role, name, username, password_hash AS passwordHash, student_id AS studentId, class_section AS classSection, deleted, updated_at AS updatedAt FROM users WHERE school_id = ? AND role IN ${SYNCED_ROLES} AND updated_at >= ?`, [schoolId, after]),
       exams: rows('SELECT id, title, subject, date, time, duration, questions, status, class_section AS classSection, updated_at AS updatedAt FROM exams WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
-      subjects: rows('SELECT subject, duration, approved, approved_at AS approvedAt, updated_at AS updatedAt FROM subject_settings WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
+      subjects: rows('SELECT subject, duration, approved, approved_at AS approvedAt, status, rejection_reason AS rejectionReason, review_comment AS reviewComment, submitted_by AS submittedBy, updated_at AS updatedAt FROM subject_settings WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       questions: rows('SELECT id, exam_id AS examId, subject, text, options, answer, created_at AS createdAt, updated_at AS updatedAt FROM questions WHERE school_id = ? AND updated_at >= ?', [schoolId, after]),
       ledger: rows('SELECT id, change, reason, reference, created_at AS createdAt FROM credit_ledger WHERE school_id = ? AND created_at >= ?', [schoolId, after]),
       lastSeen: rows('SELECT user_id AS userId, seen_at AS seenAt FROM last_seen WHERE school_id = ? AND seen_at >= ?', [schoolId, after]),
@@ -84,7 +88,7 @@ module.exports = function createSync({ rows, exec, persist }) {
         const deletedAt = shift(tomb.deletedAt)
         const kind = text(tomb.kind, 20)
         const key = text(tomb.key, 300)
-        if (!deletedAt || !['exam', 'subject', 'draft'].includes(kind) || !key) { stats.skipped += 1; continue }
+        if (!deletedAt || !['exam', 'subject', 'draft', 'question'].includes(kind) || !key) { stats.skipped += 1; continue }
         const known = rows('SELECT deleted_at FROM tombstones WHERE school_id = ? AND kind = ? AND key = ?', [schoolId, kind, key]).at(0)
         if (!known || known.deleted_at < deletedAt) exec('INSERT INTO tombstones (school_id, kind, key, deleted_at) VALUES (?, ?, ?, ?) ON CONFLICT(school_id, kind, key) DO UPDATE SET deleted_at = excluded.deleted_at', [schoolId, kind, key, deletedAt])
         if (kind === 'exam') {
@@ -97,6 +101,8 @@ module.exports = function createSync({ rows, exec, persist }) {
         } else if (kind === 'draft') {
           const split = key.indexOf('|')
           if (split > 0) exec('DELETE FROM question_drafts WHERE school_id = ? AND user_id = ? AND subject = ? AND updated_at <= ?', [schoolId, key.slice(0, split), key.slice(split + 1), deletedAt])
+        } else if (kind === 'question') {
+          exec('DELETE FROM questions WHERE school_id = ? AND id = ? AND updated_at <= ?', [schoolId, key, deletedAt])
         } else {
           exec('DELETE FROM questions WHERE school_id = ? AND subject = ? AND updated_at <= ?', [schoolId, key, deletedAt])
           exec('DELETE FROM subject_settings WHERE school_id = ? AND subject = ? AND updated_at <= ?', [schoolId, key, deletedAt])
@@ -152,17 +158,22 @@ module.exports = function createSync({ rows, exec, persist }) {
         const updatedAt = shift(subject.updatedAt)
         const name = text(subject.subject, 100)
         if (!updatedAt || !name) { stats.skipped += 1; continue }
-        const existing = rows('SELECT updated_at FROM subject_settings WHERE school_id = ? AND subject = ?', [schoolId, name]).at(0)
-        const approvedAt = subject.approvedAt ? shift(subject.approvedAt) : null
+        const existing = rows('SELECT updated_at, approved_at, status, rejection_reason, review_comment, submitted_by FROM subject_settings WHERE school_id = ? AND subject = ?', [schoolId, name]).at(0)
+        const approvedAt = subject.approvedAt ? shift(subject.approvedAt) : (subject.status === undefined ? existing?.approved_at || null : null)
         if (existing) {
           if (updatedAt > existing.updated_at) {
-            exec('UPDATE subject_settings SET duration = ?, approved = ?, approved_at = ?, updated_at = ? WHERE school_id = ? AND subject = ?', [number(subject.duration, 30), number(subject.approved) ? 1 : 0, approvedAt, updatedAt, schoolId, name])
+            const status = ['pending', 'approved', 'rejected'].includes(subject.status) ? subject.status : (number(subject.approved) ? 'approved' : (existing.status === 'rejected' ? 'rejected' : 'pending'))
+            const rejectionReason = subject.rejectionReason === undefined ? existing.rejection_reason : text(subject.rejectionReason, 500) || null
+            const reviewComment = subject.reviewComment === undefined ? existing.review_comment : text(subject.reviewComment, 500) || null
+            const submittedBy = subject.submittedBy === undefined ? existing.submitted_by : text(subject.submittedBy, 100) || null
+            exec('UPDATE subject_settings SET duration = ?, approved = ?, approved_at = ?, status = ?, rejection_reason = ?, review_comment = ?, submitted_by = ?, updated_at = ? WHERE school_id = ? AND subject = ?', [number(subject.duration, 30), status === 'approved' ? 1 : 0, approvedAt, status, rejectionReason, reviewComment, submittedBy, updatedAt, schoolId, name])
             stats.applied += 1
           } else stats.skipped += 1
           continue
         }
         if (tombstoneAfter('subject', name, updatedAt)) { stats.skipped += 1; continue }
-        exec('INSERT INTO subject_settings (school_id, subject, duration, approved, approved_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [schoolId, name, number(subject.duration, 30), number(subject.approved) ? 1 : 0, approvedAt, updatedAt])
+        const status = ['pending', 'approved', 'rejected'].includes(subject.status) ? subject.status : (number(subject.approved) ? 'approved' : 'pending')
+        exec('INSERT INTO subject_settings (school_id, subject, duration, approved, approved_at, status, rejection_reason, review_comment, submitted_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [schoolId, name, number(subject.duration, 30), status === 'approved' ? 1 : 0, approvedAt, status, text(subject.rejectionReason, 500) || null, text(subject.reviewComment, 500) || null, text(subject.submittedBy, 100) || null, updatedAt])
         stats.applied += 1
       }
 
@@ -182,7 +193,7 @@ module.exports = function createSync({ rows, exec, persist }) {
           } else stats.skipped += 1
           continue
         }
-        if ((examId && tombstoneAfter('exam', examId, updatedAt)) || tombstoneAfter('subject', text(question.subject, 100), updatedAt)) { stats.skipped += 1; continue }
+        if (tombstoneAfter('question', question.id, updatedAt) || (examId && tombstoneAfter('exam', examId, updatedAt)) || tombstoneAfter('subject', text(question.subject, 100), updatedAt)) { stats.skipped += 1; continue }
         exec('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [question.id, schoolId, examId, text(question.subject, 100), text(question.text, 2000), options, number(question.answer), number(question.createdAt, Date.now()), updatedAt])
         stats.applied += 1
       }
@@ -191,7 +202,7 @@ module.exports = function createSync({ rows, exec, persist }) {
       for (const draft of list(incoming?.drafts)) {
         const updatedAt = shift(draft.updatedAt)
         const userId = text(draft.userId, 100)
-        const subject = text(draft.subject, 80)
+        const subject = text(draft.subject, 100)
         const data = text(draft.data, 2000000)
         let validData = false
         try { validData = Array.isArray(JSON.parse(data)) } catch { /* not valid */ }

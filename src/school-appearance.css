@@ -1,0 +1,33 @@
+.school-appearance-panel {
+  display: grid;
+  gap: 20px;
+  max-width: 650px;
+  padding: 26px;
+  border: 1px solid #e5e9e3;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 5px 20px rgba(35, 54, 40, 0.04);
+}
+.school-appearance-panel h3 { margin: 0 0 6px; color: #294236; font-size: 1.05rem; }
+.school-appearance-panel > div:first-child p { margin: 0; color: #718078; font-size: 0.88rem; line-height: 1.55; }
+.school-color-presets { display: flex; flex-wrap: wrap; gap: 12px; }
+.school-color-swatch {
+  width: 42px;
+  height: 42px;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #d9e1da;
+  cursor: pointer;
+}
+.school-color-swatch.selected { box-shadow: 0 0 0 3px #24392c; }
+.school-color-custom { display: flex; align-items: center; gap: 12px; color: #52645a; font-size: 0.88rem; font-weight: 600; }
+.school-color-custom input { width: 48px; height: 38px; padding: 3px; border: 1px solid #dce6dd; border-radius: 8px; background: #fff; cursor: pointer; }
+.school-color-custom code { color: #718078; font-size: 0.82rem; }
+.school-color-preview { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 82px; padding: 18px 20px; border-radius: 12px; color: #fff; }
+.school-color-preview strong { font-size: 0.95rem; }
+.school-color-preview span { font-size: 0.8rem; font-variant-numeric: tabular-nums; opacity: 0.85; }
+.school-appearance-panel .primary-button { justify-self: start; }
+@media (max-width: 560px) {
+  .school-appearance-panel { padding: 20px; }
+  .school-color-preview { min-height: 70px; padding: 14px; }
+}

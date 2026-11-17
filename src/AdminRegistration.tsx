@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_BASE } from './apiBase'
+import PasswordInput from './PasswordInput'
 
 type Props = { onBack: () => void; onComplete: (schoolSlug: string) => void }
 
@@ -57,7 +58,7 @@ export default function AdminRegistration({ onBack, onComplete }: Props) {
             <label>Your full name<input name="name" placeholder="Enter your full name" required /></label>
             <label>School email (for payment receipts)<input name="email" type="email" placeholder="school@example.com" autoComplete="email" required /></label>
             <label>Admin username<input name="username" placeholder="Choose a username" autoComplete="username" required /></label>
-            <label>Password<input name="password" type="password" placeholder="At least 6 characters" minLength={6} autoComplete="new-password" required /></label>
+            <label>Password<PasswordInput name="password" placeholder="At least 6 characters" minLength={6} autoComplete="new-password" required /></label>
             {error && <p className="form-error">{error}</p>}
             <button className="primary-button full" type="submit" disabled={busy}>{busy ? 'Creating school...' : 'Create school account'} <span>→</span></button>
           </form>

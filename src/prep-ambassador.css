@@ -1,0 +1,122 @@
+.prep-ambassador {
+  --pa-ink: #17362d;
+  --pa-green: #1f6137;
+  --pa-muted: #6b7d73;
+  --pa-line: #e2e9e1;
+  min-height: 100vh;
+  background: linear-gradient(180deg, #eaf5ee 0%, #f8f6ea 55%, #fbf3dc 100%);
+  color: var(--pa-ink);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+.prep-ambassador *, .prep-ambassador *::before, .prep-ambassador *::after { box-sizing: border-box; }
+.prep-ambassador button, .prep-ambassador input { font: inherit; }
+.pa-header { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 70px; padding: 10px max(20px,calc((100% - 1120px)/2)); background: linear-gradient(90deg,#1f6137,#123a22); color: #fff; box-shadow: 0 4px 18px rgba(12,42,24,.2); }
+.pa-header > a:not(.pa-brand), .pa-text-button { border: 0; background: transparent; color: #f4d977; font-size: .85rem; font-weight: 700; text-decoration: none; cursor: pointer; }
+.pa-brand { display: inline-flex; align-items: center; gap: 10px; color: #fff; font-size: .86rem; font-weight: 800; letter-spacing: .07em; text-decoration: none; white-space: nowrap; }
+.pa-brand img { width: 40px; height: 40px; border-radius: 12px; }
+.pa-brand b { color: #f4d977; }
+.pa-account { display: flex; align-items: center; gap: 18px; font-size: .85rem; font-weight: 650; }
+.pa-account button { border: 0; background: transparent; color: #f4d977; font-size: .8rem; font-weight: 700; cursor: pointer; }
+.pa-auth-wrap { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(320px,.72fr); align-items: center; gap: clamp(44px,9vw,120px); width: min(1050px,calc(100% - 40px)); min-height: calc(100vh - 120px); margin: 0 auto; padding: 54px 0; }
+.pa-intro { max-width: 610px; }
+.pa-kicker { color: #987646; font-size: .68rem; font-weight: 800; letter-spacing: .16em; }
+.pa-intro h1 { margin: 18px 0; font-size: clamp(2.5rem,5vw,4.2rem); line-height: 1.04; letter-spacing: -.06em; }
+.pa-intro h1 em { color: #28714b; font-style: normal; }
+.pa-intro p, .pa-section-heading p, .pa-share-card p, .pa-rates p { color: var(--pa-muted); font-size: .92rem; line-height: 1.65; }
+.pa-login { display: grid; gap: 14px; padding: 28px; border: 1px solid var(--pa-line); border-radius: 20px; background: #fff; box-shadow: 0 18px 55px rgba(25,60,40,.09); }
+.pa-login h2 { margin: -7px 0 0; font-size: 1.7rem; letter-spacing: -.04em; }
+.pa-login > p:not(.pa-error) { margin: -7px 0 4px; color: var(--pa-muted); font-size: .84rem; line-height: 1.5; }
+.pa-login label { display: grid; gap: 7px; color: #53665b; font-size: .8rem; font-weight: 650; }
+.pa-login input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #d8e2d9; border-radius: 10px; color: var(--pa-ink); }
+.pa-login input:focus { outline: 3px solid rgba(31,97,55,.16); border-color: #42865c; }
+.pa-login > button { display: flex; align-items: center; justify-content: space-between; min-height: 45px; padding: 10px 15px; border: 0; border-radius: 10px; background: var(--pa-green); color: #fff; font-size: .86rem; font-weight: 700; cursor: pointer; }
+.pa-login > button:disabled { opacity: .6; cursor: wait; }
+.pa-error { margin: 0; padding: 11px 13px; border-radius: 10px; background: #fdecea; color: #a4261e; font-size: .82rem; line-height: 1.5; }
+.pa-notice { width: min(1120px,calc(100% - 32px)); margin: 18px auto 0; }
+.pa-loading { width: min(1120px,calc(100% - 32px)); margin: 40px auto; color: var(--pa-muted); text-align: center; }
+.pa-dashboard { width: min(1120px,calc(100% - 36px)); margin: 0 auto; padding: 36px 0 25px; }
+.pa-welcome { display: flex; align-items: end; justify-content: space-between; gap: 22px; margin-bottom: 22px; }
+.pa-welcome h1 { margin: 9px 0 5px; font-size: clamp(1.8rem,4vw,2.7rem); letter-spacing: -.055em; }
+.pa-welcome p { margin: 0; color: var(--pa-muted); font-size: .88rem; }
+.pa-kpis { display: flex; gap: 10px; }
+.pa-kpis article { display: grid; min-width: 145px; gap: 4px; padding: 13px 15px; border: 1px solid var(--pa-line); border-radius: 13px; background: #fff; }
+.pa-kpis strong { color: var(--pa-green); font-size: 1.25rem; }
+.pa-kpis span { color: var(--pa-muted); font-size: .72rem; }
+.pa-share-card, .pa-rates, .pa-withdraw, .pa-referrals, .pa-commissions { margin-bottom: 17px; padding: 21px; border: 1px solid var(--pa-line); border-radius: 16px; background: #fff; box-shadow: 0 5px 16px rgba(35,63,48,.045); }
+.pa-share-card h2, .pa-rates h2, .pa-section-heading h2 { margin: 6px 0 4px; font-size: 1.15rem; letter-spacing: -.025em; }
+.pa-share-card p, .pa-rates p, .pa-section-heading p { margin: 0; font-size: .8rem; }
+.pa-link-row { display: flex; gap: 9px; margin-top: 16px; }
+.pa-link-row input { min-width: 0; flex: 1; padding: 11px 12px; border: 1px solid var(--pa-line); border-radius: 9px; background: #f8faf7; color: #375142; font-size: .82rem; }
+.pa-link-row button { padding: 10px 16px; border: 0; border-radius: 9px; background: var(--pa-green); color: #fff; font-size: .82rem; font-weight: 700; cursor: pointer; }
+.pa-rates { display: flex; align-items: center; justify-content: space-between; gap: 22px; background: #edf5ee; }
+.pa-withdraw { display: flex; align-items: center; justify-content: space-between; gap: 24px; border-color: #e9dfbf; background: #fffdf6; }
+.pa-withdraw h2 { margin: 6px 0 4px; font-size: 1.15rem; }
+.pa-withdraw p { max-width: 650px; margin: 0; color: var(--pa-muted); font-size: .8rem; line-height: 1.55; }
+.pa-withdraw-details { display: grid; flex: 1; grid-template-columns: repeat(3,minmax(120px,1fr)); gap: 9px; }
+.pa-withdraw-details label { display: grid; gap: 6px; color: #53665b; font-size: .72rem; font-weight: 650; }
+.pa-withdraw-details input { width: 100%; min-width: 0; min-height: 40px; padding: 8px 10px; border: 1px solid #d8e2d9; border-radius: 9px; background: #fff; color: var(--pa-ink); font-size: .8rem; }
+.pa-withdraw-details input:focus { outline: 3px solid rgba(31,97,55,.16); border-color: #42865c; }
+.pa-withdraw-details input:disabled { background: #f3f5f2; color: #819087; }
+.pa-withdraw-action { display: grid; flex: none; justify-items: end; gap: 8px; }
+.pa-withdraw-action > strong { color: var(--pa-green); font-size: 1.2rem; }
+.pa-withdraw-action > strong span { color: var(--pa-muted); font-size: .72rem; font-weight: 500; }
+.pa-withdraw-action button { min-height: 40px; padding: 9px 15px; border: 0; border-radius: 9px; background: var(--pa-green); color: #fff; font-size: .8rem; font-weight: 700; cursor: pointer; }
+.pa-withdraw-action button:disabled { opacity: .5; cursor: not-allowed; }
+.pa-withdraw-action small { max-width: 240px; color: var(--pa-muted); font-size: .7rem; text-align: right; }
+.pa-success { margin: 0 0 16px; padding: 11px 13px; border: 1px solid #cae4d0; border-radius: 10px; background: #edf8ef; color: #1d6b38; font-size: .82rem; line-height: 1.5; }
+.pa-rate-list { display: flex; gap: 9px; }
+.pa-rate-list article { display: grid; min-width: 106px; gap: 5px; padding: 12px; border: 1px solid #dce8dd; border-radius: 11px; background: #fff; }
+.pa-rate-list article span { color: var(--pa-muted); font-size: .69rem; font-weight: 750; letter-spacing: .07em; }
+.pa-rate-list article strong { color: var(--pa-green); font-size: .93rem; }
+.pa-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.pa-count { padding: 7px 10px; border-radius: 999px; background: #edf5ee; color: var(--pa-green); font-size: .72rem; font-weight: 750; white-space: nowrap; }
+.pa-table-wrap { overflow-x: auto; }
+.pa-table-wrap table { width: 100%; border-collapse: collapse; text-align: left; }
+.pa-table-wrap th { padding: 10px 9px; color: #7a8a80; font-size: .68rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.pa-table-wrap td { padding: 13px 9px; border-top: 1px solid #edf1ec; color: #40564a; font-size: .8rem; white-space: nowrap; }
+.pa-table-wrap td strong { color: var(--pa-ink); }
+.pa-table-wrap td a { color: var(--pa-green); text-decoration: none; }
+.pa-empty { padding: 28px 16px; border: 1px dashed #d5e0d6; border-radius: 12px; background: #fafcf9; text-align: center; }
+.pa-empty strong { font-size: .88rem; }
+.pa-empty p { margin: 6px 0 0; color: var(--pa-muted); font-size: .78rem; }
+.pa-commission-list { display: grid; }
+.pa-commission-list article { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid #edf1ec; }
+.pa-commission-list article:first-child { border-top: 0; }
+.pa-commission-list article > div { display: grid; gap: 4px; }
+.pa-commission-list article strong { font-size: .84rem; }
+.pa-commission-list article span { color: var(--pa-muted); font-size: .72rem; }
+.pa-commission-list article > strong { color: var(--pa-green); white-space: nowrap; }
+.pa-commission-status, .pa-withdrawal-status { padding: 5px 8px; border-radius: 999px; font-size: .67rem !important; font-weight: 750; white-space: nowrap; }
+.pa-commission-status.unpaid, .pa-withdrawal-status.pending { background: #fcf1d0; color: #76580d !important; }
+.pa-commission-status.pending { background: #e9f0fc; color: #345b96 !important; }
+.pa-commission-status.approved, .pa-withdrawal-status.approved { background: #dff3e5; color: #1d6b38 !important; }
+.pa-withdrawal-status.rejected { background: #fdecea; color: #a4261e !important; }
+.pa-footer { padding: 18px; color: #75867b; font-size: .74rem; text-align: center; }
+
+@media (max-width: 760px) {
+  .pa-auth-wrap { grid-template-columns: 1fr; gap: 28px; width: min(540px,calc(100% - 32px)); padding: 38px 0; }
+  .pa-intro { text-align: center; }
+  .pa-welcome, .pa-rates, .pa-withdraw { align-items: stretch; flex-direction: column; }
+  .pa-withdraw-details { grid-template-columns: 1fr; }
+  .pa-withdraw-action { justify-items: stretch; }
+  .pa-kpis { width: 100%; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .pa-kpis article { min-width: 0; padding: 11px; }
+  .pa-kpis strong { font-size: 1rem; overflow-wrap: anywhere; }
+  .pa-withdraw-action { justify-items: stretch; }
+  .pa-withdraw-action small { max-width: none; text-align: left; }
+  .pa-rate-list { width: 100%; }
+  .pa-rate-list article { min-width: 0; flex: 1; }
+  .pa-table-wrap table { min-width: 680px; }
+}
+@media (max-width: 480px) {
+  .pa-header { min-height: 62px; padding-inline: 14px; }
+  .pa-brand { gap: 7px; font-size: .73rem; }
+  .pa-brand img { width: 34px; height: 34px; }
+  .pa-account { gap: 9px; font-size: .76rem; }
+  .pa-dashboard { width: calc(100% - 24px); padding-top: 25px; }
+  .pa-share-card, .pa-rates, .pa-withdraw, .pa-referrals, .pa-commissions { padding: 16px; }
+  .pa-link-row { flex-direction: column; }
+  .pa-rate-list { gap: 6px; }
+  .pa-rate-list article { padding: 10px 8px; }
+  .pa-rate-list article strong { font-size: .8rem; }
+}

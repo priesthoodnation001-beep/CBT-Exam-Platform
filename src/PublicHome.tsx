@@ -1,6 +1,6 @@
 import './journey-home.css'
 
-type Props = { onSignIn: () => void; onRegister: () => void; onSms: () => void; onHome: () => void; journey?: 'home' | 'sms' }
+type Props = { onSignIn: () => void; onRegister: () => void; onSms: () => void; onPrep: () => void; onHome: () => void; journey?: 'home' | 'sms' }
 
 function JourneyIcon({ kind }: { kind: 'exam' | 'school' }) {
   return kind === 'exam' ? (
@@ -18,7 +18,7 @@ function JourneyIcon({ kind }: { kind: 'exam' | 'school' }) {
   )
 }
 
-export default function PublicHome({ onSignIn, onRegister, onSms, onHome, journey = 'home' }: Props) {
+export default function PublicHome({ onSignIn, onRegister, onSms, onPrep, onHome, journey = 'home' }: Props) {
   return (
     <div className="journey-home">
       <header className="journey-nav">
@@ -42,9 +42,9 @@ export default function PublicHome({ onSignIn, onRegister, onSms, onHome, journe
         </main>
       ) : <main className="journey-main">
         <section className="journey-intro">
-          <span className="journey-kicker"><i /> ONE PLATFORM. TWO JOURNEYS.</span>
+          <span className="journey-kicker"><i /> ONE PLATFORM. THREE JOURNEYS.</span>
           <h1>Tools for every<br /><em>part of school life.</em></h1>
-          <p>Choose where you want to go. Start with secure computer-based exams, or see what’s coming next for your school.</p>
+          <p>Choose the TIMPRIEST EDU platform that fits your needs: school examinations, school operations, or personal exam preparation.</p>
         </section>
 
         <section className="journey-options" aria-label="Choose a TIMPRIEST EDU platform">
@@ -85,6 +85,24 @@ export default function PublicHome({ onSignIn, onRegister, onSms, onHome, journe
               <li><span>◷</span> More details will be shared as it develops</li>
             </ul>
             <button className="journey-coming-note journey-coming-link" type="button" onClick={onSms}><span className="journey-coming-dot" /> Learn about the SMS journey <span aria-hidden="true">→</span></button>
+          </article>
+
+          <article className="journey-card journey-prep" aria-labelledby="prep-title">
+            <div className="journey-card-top">
+              <div className="journey-icon"><JourneyIcon kind="exam" /></div>
+              <span className="journey-state available"><i /> PREPARATION</span>
+            </div>
+            <div className="journey-card-copy">
+              <p className="journey-card-label">03 / EXAM PREPARATION</p>
+              <h2 id="prep-title">JAMB, WAEC &amp; NECO<br />Practice Platform</h2>
+              <p>Build confidence with timed subject practice, clear feedback, and a record of your progress.</p>
+            </div>
+            <ul className="journey-features">
+              <li><span>✓</span> Separate student preparation accounts</li>
+              <li><span>✓</span> Timed practice by exam and subject</li>
+              <li><span>✓</span> Scores and answer review</li>
+            </ul>
+            <button className="journey-primary" type="button" onClick={onPrep}>Open exam preparation <span aria-hidden="true">→</span></button>
           </article>
         </section>
 

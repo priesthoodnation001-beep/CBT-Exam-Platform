@@ -5,14 +5,34 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="google-site-verification" content="LaUnuynM0Fdnod-OHdlu7xwCF71nmC8EvU1ClqWr6Ao" />
-    <title>TIMPRIEST EDU | One Platform, Two Journey</title>
+    <title>TIMPRIEST EDU | One Platform, Three Journeys</title>
 
   <meta name="description"content="TIMPRIEST EDU is an educational portal for online assessments and student examinations.">
 
   <meta name="robots" content="index, follow">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="startup-welcome" role="status" aria-live="polite">
+        <img src="/logo-512.png" alt="" aria-hidden="true" />
+        <h1>WELCOME TO YOUR SPACE</h1>
+        <div class="startup-loading-widget" role="status" aria-label="Loading your space">
+          <span class="startup-loading-track" aria-hidden="true"><span></span></span>
+          <span class="startup-loading-label">Loading your space</span>
+        </div>
+      </main>
+    </div>
+    <style>
+      .startup-welcome{display:grid;min-height:100vh;place-content:center;justify-items:center;gap:18px;padding:28px;background:#fff;color:#19382e;text-align:center;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+      .startup-welcome img{width:76px;height:76px;object-fit:contain}
+      .startup-welcome h1{max-width:760px;margin:0;font-size:clamp(1.35rem,4vw,2.5rem);font-weight:800;letter-spacing:.025em;line-height:1.2}
+      .startup-loading-widget{display:grid;grid-template-columns:minmax(130px,190px);gap:10px;width:min(100%,260px);padding:12px 14px;border:1px solid #e4eee7;border-radius:12px;background:#fbfdfb;text-align:left}
+      .startup-loading-track{height:5px;overflow:hidden;border-radius:99px;background:#e4eee7}
+      .startup-loading-track span{display:block;width:40%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#1f6137,#6aaa7b);animation:startup-loading-progress 1.4s ease-in-out infinite}
+      .startup-loading-label{color:#52645a;font-size:.85rem;font-weight:650}
+      @keyframes startup-loading-progress{from{transform:translateX(-110%)}to{transform:translateX(260%)}}
+      @media(prefers-reduced-motion:reduce){.startup-loading-track span{animation-duration:3s}}
+    </style>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

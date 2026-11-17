@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import './signin.css'
+import PasswordInput from './PasswordInput'
 
 export type SignInRole = 'Admin' | 'Teacher' | 'Student'
 
@@ -107,12 +108,13 @@ type SignInProps = {
   error: string
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
   onSwitchRole: (role: SignInRole) => void
+  allowRoleSwitch?: boolean
   onSchoolLink: (slug: string) => void
   biometric?: Biometric
 }
 
 // One page per role, each with its own look.
-export function RoleSignIn({ role, schoolName, needSchool, schoolError, loading, error, onSubmit, onSwitchRole, onSchoolLink, biometric }: SignInProps) {
+export function RoleSignIn({ role, schoolName, needSchool, schoolError, loading, error, onSubmit, onSwitchRole, allowRoleSwitch = true, onSchoolLink, biometric }: SignInProps) {
   const copy = COPY[role]
   const [link, setLink] = useState('')
   const others = (['Student', 'Teacher', 'Admin'] as SignInRole[]).filter((item) => item !== role)
@@ -136,7 +138,7 @@ export function RoleSignIn({ role, schoolName, needSchool, schoolError, loading,
               <p className="si-sub">{copy.sub}</p>
               <form onSubmit={onSubmit}>
                 <label>{role === 'Student' ? 'Student ID' : 'Username'}<input name="identifier" placeholder={role === 'Student' ? 'e.g. STUDENT-001' : `Your ${role.toLowerCase()} username`} autoComplete="username" autoFocus required /></label>
-                {role !== 'Student' && <label>Password<input name="password" type="password" placeholder="Your password" autoComplete="current-password" required /></label>}
+                {role !== 'Student' && <label>Password<PasswordInput name="password" placeholder="Your password" autoComplete="current-password" required /></label>}
                 {biometric?.available && !biometric.saved && <label className="si-check"><input type="checkbox" checked={biometric.enable} onChange={(event) => biometric.setEnable(event.target.checked)} />Enable fingerprint sign-in on this device</label>}
                 {error && <p className="si-error">{error}</p>}
                 <button className="si-button" type="submit" disabled={loading}>{loading ? 'Signing in...' : copy.button} <Icon name="arrow" size={18} /></button>
@@ -144,10 +146,10 @@ export function RoleSignIn({ role, schoolName, needSchool, schoolError, loading,
               {biometric?.available && biometric.saved && <button className="si-ghost" type="button" onClick={biometric.onSignIn} disabled={biometric.loading}><Icon name="finger" size={18} />{biometric.loading ? 'Waiting for fingerprint...' : 'Sign in with fingerprint'}</button>}
             </>
           )}
-          <div className="si-switch">
+          {allowRoleSwitch && <div className="si-switch">
             <span>Not {role === 'Admin' ? 'an admin' : `a ${role.toLowerCase()}`}?</span>
             {others.map((other) => <button key={other} type="button" onClick={() => onSwitchRole(other)}>{other} sign-in</button>)}
-          </div>
+          </div>}
         </div>
         <p className="si-copy">TIMPRIEST EDU · CBT Suite</p>
       </div>
