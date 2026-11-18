@@ -93,7 +93,7 @@ export default function TimedExamRunner({ exam, questions, selectedAnswers, setS
           <div className="ex-done-icon">✓</div>
           <h2>Your exam has been submitted</h2>
           <p>{timeUp ? 'Your time was up, so it was submitted automatically.' : 'Well done. Your answers have been sent to your teacher.'}</p>
-          <p className="ex-done-note">You will be signed out in a few seconds.</p>
+          <p className="ex-done-note">Thank you! You will be signed out in a few seconds, and this screen will reset for the next student.</p>
           <button className="ex-btn primary" type="button" onClick={exit}>Finish</button>
         </div>
       </div>

@@ -366,9 +366,14 @@ function AppInner() {
     } catch (error) { setLoginError(error instanceof Error ? error.message : 'Fingerprint sign-in failed. Use your regular sign-in details.') } finally { setBiometricLoading(false) }
   }
 
-  function logout() {
+  // reloadPage: after a student's exam, the whole page reloads so the next student starts from a clean sign-in screen (desktop and browser only).
+  function logout(reloadPage = false) {
     const slug = session?.schoolSlug
-    const goToSchool = () => { if (slug && !Capacitor.isNativePlatform()) window.location.assign(preserveAppRole(schoolRolePath(slug, session?.role || 'student'))) }
+    const goToSchool = () => {
+      if (Capacitor.isNativePlatform()) return
+      if (slug) window.location.assign(preserveAppRole(schoolRolePath(slug, session?.role || 'student')))
+      else if (reloadPage) window.location.reload()
+    }
     if (token) void api('/logout', token, { method: 'POST' }).catch(() => undefined).finally(goToSchool)
     else goToSchool()
     saveToken(null)
@@ -444,11 +449,11 @@ function AppInner() {
     try {
       await api('/submissions', token, { method: 'POST', body: JSON.stringify({ examId: activeExam.id, answers, timeSpent: examStartedAt.current ? Math.round((Date.now() - examStartedAt.current) / 1000) : undefined }) })
       setSubmitted(true); showNotice('Exam submitted successfully.')
-      if (autoLogout && session?.role === 'Student') window.setTimeout(() => logout(), 4000)
+      if (autoLogout && session?.role === 'Student') window.setTimeout(() => logout(true), 5000)
       return true
     } catch (error) {
       const text = error instanceof Error ? error.message : 'Could not submit exam.'
-      if (/already submitted/i.test(text)) { setSubmitted(true); if (autoLogout && session?.role === 'Student') window.setTimeout(() => logout(), 4000); return true }
+      if (/already submitted/i.test(text)) { setSubmitted(true); if (autoLogout && session?.role === 'Student') window.setTimeout(() => logout(true), 5000); return true }
       showNotice(text); return false
     }
   }
@@ -464,7 +469,7 @@ function AppInner() {
       loggingOut.current = true
       const sent = await submitExam(selectedAnswers, false)
       loggingOut.current = false
-      if (sent) logout()
+      if (sent) logout(true)
       return
     }
     if (window.confirm('Log out now?')) logout()
