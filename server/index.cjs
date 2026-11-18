@@ -108,6 +108,42 @@ function publicQuestion(question, includeAnswer = false) {
   return result
 }
 
+// ---------- Shuffle: each student gets their own fixed random order ----------
+// The order comes from the student and the exam, so it stays the same after a refresh or a restart, and differs between students.
+function seededRandom(seedText) {
+  let seed = Number.parseInt(crypto.createHash('sha256').update(seedText).digest('hex').slice(0, 8), 16) >>> 0
+  return () => {
+    seed = (seed + 0x6d2b79f5) >>> 0
+    let t = seed
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function seededShuffle(list, random) {
+  const copy = list.slice()
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const other = Math.floor(random() * (index + 1))
+    ;[copy[index], copy[other]] = [copy[other], copy[index]]
+  }
+  return copy
+}
+
+// Returns this student's version of one exam's questions: questions in a new order and the A to D options reordered.
+// The student's screen is told nothing about the original order, and marking maps the answers back (see /api/submissions).
+function shuffleForStudent(questions, studentId, examId) {
+  const ordered = seededShuffle(questions, seededRandom(`order:${studentId}:${examId}`))
+  return ordered.map((question) => {
+    const permutation = seededShuffle(question.options.map((_, position) => position), seededRandom(`options:${studentId}:${examId}:${question.id}`))
+    return { ...question, options: permutation.map((position) => question.options[position]) }
+  })
+}
+
+function optionPermutation(optionCount, studentId, examId, questionId) {
+  return seededShuffle(Array.from({ length: optionCount }, (_, position) => position), seededRandom(`options:${studentId}:${examId}:${questionId}`))
+}
+
 // An exam can be limited to one or more classes, e.g. "JSS 1, JSS 2". Blank means every class.
 function classMatches(examClasses, studentClass) {
   const wanted = String(examClasses || '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean)
@@ -696,7 +732,7 @@ app.get('/api/data', authenticate, (request, response) => {
     }))
     : []
   const allExams = rows(
-    `SELECT exams.id, exams.title, exams.subject, exams.date, exams.time, exams.duration, exams.questions, exams.status, exams.class_section AS classSection,
+    `SELECT exams.id, exams.title, exams.subject, exams.date, exams.time, exams.duration, exams.questions, exams.status, exams.shuffle, exams.class_section AS classSection,
       COALESCE(subject_settings.duration, 30) AS subject_duration,
       COALESCE(subject_settings.approved, 0) AS subject_approved,
       (SELECT COUNT(*) FROM submissions WHERE submissions.exam_id = exams.id AND submissions.student_id = ?) AS taken,
@@ -714,7 +750,24 @@ app.get('/api/data', authenticate, (request, response) => {
       : request.user.role === 'Teacher'
         ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer, questions.created_at FROM questions JOIN subject_settings ON subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject WHERE questions.school_id = ? AND subject_settings.submitted_by = ? ORDER BY questions.created_at'
         : 'SELECT id, exam_id, subject, text, options, answer, created_at FROM questions WHERE school_id = ? ORDER BY created_at'
-  const questions = rows(questionSql, request.user.role === 'Teacher' ? [schoolId, request.user.id] : [schoolId]).map((question) => publicQuestion(question, !isStudent))
+  let questions = rows(questionSql, request.user.role === 'Teacher' ? [schoolId, request.user.id] : [schoolId]).map((question) => publicQuestion(question, !isStudent))
+  if (isStudent) {
+    // For every exam with shuffle switched on, this student's questions come in their own fixed random order,
+    // with the A to D options reordered too. The answer key is never sent to students, so nothing else changes.
+    const shuffledExams = exams.filter((exam) => Number(exam.shuffle) === 1)
+    if (shuffledExams.length) {
+      const result = []
+      const used = new Set()
+      for (const exam of shuffledExams) {
+        const mine = questions.filter((question) => question.examId === exam.id || (!question.examId && question.subject === exam.subject))
+        if (!mine.length) continue
+        // each question object is copied per exam, so two exams of one subject cannot share an order
+        result.push(...shuffleForStudent(mine, request.user.id, exam.id).map((question) => ({ ...question, shuffledFor: exam.id })))
+        mine.forEach((question) => used.add(question.id))
+      }
+      questions = [...questions.filter((question) => !used.has(question.id)), ...result]
+    }
+  }
   const results = request.user.role === 'Admin'
     ? rows('SELECT submissions.id, submissions.score, submissions.total, submissions.time_spent, submissions.submitted_at, exams.title AS exam_title, exams.subject AS subject, exams.date AS exam_date, exams.time AS exam_time, users.name AS student_name, users.student_id, users.class_section FROM submissions JOIN exams ON exams.id = submissions.exam_id JOIN users ON users.id = submissions.student_id WHERE submissions.school_id = ? ORDER BY submissions.submitted_at DESC', [schoolId])
     : []
@@ -795,6 +848,7 @@ app.delete('/api/users/:id', authenticate, requireRole('Admin'), (request, respo
 app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) => {
   const { title, subject, date, time, duration, questions, classSection = '' } = request.body || {}
   if (!title || !subject || !date || !time) return response.status(400).json({ error: 'Title, subject, date, and time are required.' })
+  const shuffleFlag = request.body?.shuffle === true || request.body?.shuffle === 'true' || request.body?.shuffle === 'on' || request.body?.shuffle === 1 || request.body?.shuffle === '1' ? 1 : 0
   const selectedQuestionIds = request.body?.selectedQuestionIds
   if (selectedQuestionIds !== undefined) {
     const parsedDate = new Date(`${date}T00:00:00.000Z`)
@@ -822,9 +876,9 @@ app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) =
     const now = Date.now()
     try {
       db.run('BEGIN')
-      db.run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?)', [
+      db.run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section, shuffle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?, ?)', [
         id, request.user.schoolId, String(title).trim(), String(subject).trim(), String(date), String(time),
-        durationMinutes, sourceQuestions.length, String(classSection || '').trim().slice(0, 200)
+        durationMinutes, sourceQuestions.length, String(classSection || '').trim().slice(0, 200), shuffleFlag
       ])
       for (const question of sourceQuestions) {
         db.run('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
@@ -841,7 +895,7 @@ app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) =
     return
   }
   const id = crypto.randomUUID()
-  run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?)', [id, request.user.schoolId, title, subject, date, time, Number(duration) || 90, Number(questions) || 0, String(classSection || '').trim().slice(0, 200)])
+  run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section, shuffle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?, ?)', [id, request.user.schoolId, title, subject, date, time, Number(duration) || 90, Number(questions) || 0, String(classSection || '').trim().slice(0, 200), shuffleFlag])
   response.status(201).json({ exam: rows('SELECT * FROM exams WHERE id = ?', [id])[0] })
 })
 
@@ -1097,7 +1151,15 @@ app.post('/api/submissions', authenticate, requireRole('Student'), (request, res
   const givenAnswers = tooLate ? {} : answers
   const examQuestions = rows('SELECT questions.id, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? AND (questions.exam_id = ? OR (questions.exam_id IS NULL AND questions.subject = ?))', [schoolId, examId, exam.subject])
   const total = examQuestions.length
-  const score = examQuestions.reduce((sum, question) => sum + (Number(givenAnswers[question.id]) === Number(question.answer) ? 1 : 0), 0)
+  const optionCounts = new Map(rows('SELECT id, options FROM questions WHERE school_id = ? AND (exam_id = ? OR (exam_id IS NULL AND subject = ?))', [schoolId, examId, exam.subject]).map((item) => [item.id, (() => { try { return JSON.parse(item.options).length } catch { return 4 } })()]))
+  // With shuffle on, the student saw the options in their own order, so their chosen position is mapped back to the original position.
+  const originalChoice = (question) => {
+    const chosen = Number(givenAnswers[question.id])
+    if (Number(exam.shuffle) !== 1 || !Number.isInteger(chosen)) return chosen
+    const count = optionCounts.get(question.id) || 4
+    return optionPermutation(count, request.user.id, examId, question.id)[chosen]
+  }
+  const score = examQuestions.reduce((sum, question) => sum + (originalChoice(question) === Number(question.answer) ? 1 : 0), 0)
   const maxSeconds = duration * 60 + 120
   const spent = hasStart
     ? Math.max(0, Math.min(Math.round((now - startedAt) / 1000), maxSeconds)) // measured by the server from the saved start time
@@ -3008,6 +3070,7 @@ async function start() {
   const prepQuestionColumns = rows('PRAGMA table_info(prep_questions)').map((column) => column.name)
   if (!prepQuestionColumns.includes('active')) db.run('ALTER TABLE prep_questions ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
   if (!prepQuestionColumns.includes('image')) db.run('ALTER TABLE prep_questions ADD COLUMN image TEXT')
+  if (!rows('PRAGMA table_info(exams)').map((column) => column.name).includes('shuffle')) db.run('ALTER TABLE exams ADD COLUMN shuffle INTEGER NOT NULL DEFAULT 0')
   db.run('CREATE INDEX IF NOT EXISTS prep_questions_exam_subject ON prep_questions (exam, subject)')
   db.run('CREATE TABLE IF NOT EXISTS prep_practice_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, question_ids TEXT NOT NULL, started_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, completed_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS prep_attempts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, score INTEGER NOT NULL, total INTEGER NOT NULL, created_at TEXT NOT NULL)')

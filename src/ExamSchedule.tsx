@@ -1,7 +1,7 @@
 import type { FormEvent } from 'react'
 import { STUDENT_SECTIONS } from './studentSections'
 
-type Exam = { id: string; title: string; classSection?: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number }
+type Exam = { id: string; title: string; classSection?: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number; shuffle?: number }
 type Props = { exams: Exam[]; classes?: string[]; showForm: boolean; setShowForm: (value: boolean) => void; addExam: (event: FormEvent<HTMLFormElement>) => void; deleteExam: (exam: Exam) => void }
 
 export default function ExamSchedule({ exams, classes = [], showForm, setShowForm, addExam, deleteExam }: Props) {
@@ -29,6 +29,7 @@ export default function ExamSchedule({ exams, classes = [], showForm, setShowFor
             <label>Start time<input name="time" type="time" required /></label>
             <label>Duration (minutes)<input name="duration" type="number" min="1" defaultValue="90" required /></label>
             <label>Number of questions<input name="questions" type="number" min="1" defaultValue="30" required /></label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, flexDirection: 'row' }}><input name="shuffle" type="checkbox" style={{ width: 'auto', margin: 0 }} /> Shuffle questions and options for each student</label>
           </div>
           <div className="form-actions">
             <button type="button" className="secondary-button" onClick={() => setShowForm(false)}>Cancel</button>
@@ -40,7 +41,7 @@ export default function ExamSchedule({ exams, classes = [], showForm, setShowFor
         {exams.map((exam) => (
           <article className="exam-card" key={exam.id}>
             <div className="exam-card-date"><strong>{new Date(`${exam.date}T00:00:00`).getDate()}</strong><span>{new Date(`${exam.date}T00:00:00`).toLocaleString('en', { month: 'short' }).toUpperCase()}</span></div>
-            <div><h3>{exam.title}</h3><p>{exam.subject} · {exam.classSection || 'All classes'} · {exam.time} · {exam.duration} minutes</p><small>{exam.questions} questions</small></div>
+            <div><h3>{exam.title}</h3><p>{exam.subject} · {exam.classSection || 'All classes'} · {exam.time} · {exam.duration} minutes</p><small>{exam.questions} questions{exam.shuffle ? ' · shuffled' : ''}</small></div>
             <span className={`tag ${exam.status === 'Draft' ? 'draft' : 'live'}`}>{exam.status}</span>
             <button className="delete-button" onClick={() => deleteExam(exam)}>Delete</button>
           </article>
