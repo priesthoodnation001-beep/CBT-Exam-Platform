@@ -151,6 +151,23 @@ function classMatches(examClasses, studentClass) {
   return wanted.includes(String(studentClass || '').trim().toLowerCase())
 }
 
+// An exam can also be set for named students only (for example a make-up exam). When students are picked, only they can
+// see, start and submit it, and the class setting is ignored. With nobody picked, the class rule above applies.
+function parseExamStudentIds(value) {
+  try {
+    const list = JSON.parse(value || '[]')
+    return Array.isArray(list) ? list.map(String) : []
+  } catch {
+    return []
+  }
+}
+
+function examAllowsStudent(exam, userId, studentClass) {
+  const picked = parseExamStudentIds(exam.student_ids ?? exam.studentIds)
+  if (picked.length) return picked.includes(String(userId))
+  return classMatches(exam.class_section ?? exam.classSection, studentClass)
+}
+
 const STUDENT_EXAM_ACCESS_ERROR = 'YOU ARE NOT AUTHORIZED TO ENTER THE EXAM DASHBOARD'
 
 // Exam dates and times are always read as Nigeria time (West Africa Time, UTC+1, no daylight saving),
@@ -192,7 +209,7 @@ function scheduledExamHasTime(exam, now = Date.now()) {
 function studentHasExamAccess(userId, schoolId, now = Date.now()) {
   const studentClass = studentClassOf(userId)
   const exams = rows(
-    `SELECT exams.id, exams.date, exams.time, exams.duration, exams.class_section, subject_settings.duration AS subject_duration,
+    `SELECT exams.id, exams.date, exams.time, exams.duration, exams.class_section, exams.student_ids, subject_settings.duration AS subject_duration,
        (SELECT started_at FROM exam_starts WHERE exam_starts.exam_id = exams.id AND exam_starts.student_id = ?) AS started_at
      FROM exams
      JOIN subject_settings ON subject_settings.subject = exams.subject AND subject_settings.school_id = exams.school_id AND subject_settings.approved = 1
@@ -203,7 +220,7 @@ function studentHasExamAccess(userId, schoolId, now = Date.now()) {
     [userId, schoolId, userId]
   )
   return exams.some((exam) => {
-    if (!classMatches(exam.class_section, studentClass)) return false
+    if (!examAllowsStudent(exam, userId, studentClass)) return false
     return scheduledExamHasTime(exam, now)
   })
 }
@@ -732,7 +749,7 @@ app.get('/api/data', authenticate, (request, response) => {
     }))
     : []
   const allExams = rows(
-    `SELECT exams.id, exams.title, exams.subject, exams.date, exams.time, exams.duration, exams.questions, exams.status, exams.shuffle, exams.class_section AS classSection,
+    `SELECT exams.id, exams.title, exams.subject, exams.date, exams.time, exams.duration, exams.questions, exams.status, exams.shuffle, exams.class_section AS classSection, exams.student_ids AS studentIds,
       COALESCE(subject_settings.duration, 30) AS subject_duration,
       COALESCE(subject_settings.approved, 0) AS subject_approved,
       (SELECT COUNT(*) FROM submissions WHERE submissions.exam_id = exams.id AND submissions.student_id = ?) AS taken,
@@ -742,7 +759,10 @@ app.get('/api/data', authenticate, (request, response) => {
     [request.user.id, request.user.id, schoolId]
   )
   const myClass = isStudent ? studentClassOf(request.user.id) : ''
-  const exams = isStudent ? allExams.filter((exam) => classMatches(exam.classSection, myClass) && (exam.taken || (exam.status === 'Scheduled' && scheduledExamHasTime(exam)))) : allExams // students only see their class and exams that have not expired
+  const exams = (isStudent
+    ? allExams.filter((exam) => examAllowsStudent(exam, request.user.id, myClass) && (exam.taken || (exam.status === 'Scheduled' && scheduledExamHasTime(exam))))
+    : allExams // student
+  ).map(({ studentIds, ...exam }) => (isStudent ? exam : { ...exam, studentIds: parseExamStudentIds(studentIds) })) // students never see who else was pickeds only see their class and exams that have not expired
   const questionSql = isStudent
     ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? ORDER BY questions.created_at'
     : request.user.role === 'Admin'
@@ -848,6 +868,14 @@ app.delete('/api/users/:id', authenticate, requireRole('Admin'), (request, respo
 app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) => {
   const { title, subject, date, time, duration, questions, classSection = '' } = request.body || {}
   if (!title || !subject || !date || !time) return response.status(400).json({ error: 'Title, subject, date, and time are required.' })
+  const pickedStudentIds = Array.isArray(request.body?.studentIds) ? [...new Set(request.body.studentIds.map((item) => String(item)))] : []
+  if (pickedStudentIds.length > 200) return response.status(400).json({ error: 'Pick 200 students or fewer for one exam.' })
+  let studentIdsJson = null
+  if (pickedStudentIds.length) {
+    const found = rows(`SELECT id FROM users WHERE school_id = ? AND role = 'Student' AND deleted = 0 AND id IN (${pickedStudentIds.map(() => '?').join(',')})`, [request.user.schoolId, ...pickedStudentIds])
+    if (found.length !== pickedStudentIds.length) return response.status(400).json({ error: 'One or more selected students were not found.' })
+    studentIdsJson = JSON.stringify(pickedStudentIds)
+  }
   const shuffleFlag = request.body?.shuffle === true || request.body?.shuffle === 'true' || request.body?.shuffle === 'on' || request.body?.shuffle === 1 || request.body?.shuffle === '1' ? 1 : 0
   const selectedQuestionIds = request.body?.selectedQuestionIds
   if (selectedQuestionIds !== undefined) {
@@ -876,9 +904,9 @@ app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) =
     const now = Date.now()
     try {
       db.run('BEGIN')
-      db.run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section, shuffle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?, ?)', [
+      db.run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section, shuffle, student_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?, ?, ?)', [
         id, request.user.schoolId, String(title).trim(), String(subject).trim(), String(date), String(time),
-        durationMinutes, sourceQuestions.length, String(classSection || '').trim().slice(0, 200), shuffleFlag
+        durationMinutes, sourceQuestions.length, studentIdsJson ? '' : String(classSection || '').trim().slice(0, 1000), shuffleFlag, studentIdsJson
       ])
       for (const question of sourceQuestions) {
         db.run('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
@@ -895,7 +923,7 @@ app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) =
     return
   }
   const id = crypto.randomUUID()
-  run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section, shuffle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?, ?)', [id, request.user.schoolId, title, subject, date, time, Number(duration) || 90, Number(questions) || 0, String(classSection || '').trim().slice(0, 200), shuffleFlag])
+  run('INSERT INTO exams (id, school_id, title, subject, date, time, duration, questions, status, class_section, shuffle, student_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'Scheduled\', ?, ?, ?)', [id, request.user.schoolId, title, subject, date, time, Number(duration) || 90, Number(questions) || 0, studentIdsJson ? '' : String(classSection || '').trim().slice(0, 1000), shuffleFlag, studentIdsJson])
   response.status(201).json({ exam: rows('SELECT * FROM exams WHERE id = ?', [id])[0] })
 })
 
@@ -1113,7 +1141,7 @@ app.post('/api/exams/:id/start', authenticate, requireRole('Student'), (request,
   const examId = request.params.id
   const exam = rows(OPEN_EXAM_SQL, [examId, schoolId]).at(0)
   if (!exam) return response.status(404).json({ error: 'Exam is not available.' })
-  if (!classMatches(exam.class_section, studentClassOf(request.user.id))) return response.status(403).json({ error: 'This exam is not for your class.' })
+  if (!examAllowsStudent(exam, request.user.id, studentClassOf(request.user.id))) return response.status(403).json({ error: 'This exam is not available to you.' })
   const duration = examDurationMinutes(schoolId, exam)
   const startsAt = scheduledExamStart(exam)
   const dayEnd = scheduledExamDayEnd(exam)
@@ -1136,7 +1164,7 @@ app.post('/api/submissions', authenticate, requireRole('Student'), (request, res
   const schoolId = request.user.schoolId
   const exam = rows(OPEN_EXAM_SQL, [examId, schoolId]).at(0)
   if (!exam) return response.status(404).json({ error: 'Exam is not available.' })
-  if (!classMatches(exam.class_section, studentClassOf(request.user.id))) return response.status(403).json({ error: 'This exam is not for your class.' })
+  if (!examAllowsStudent(exam, request.user.id, studentClassOf(request.user.id))) return response.status(403).json({ error: 'This exam is not available to you.' })
   const startsAt = scheduledExamStart(exam)
   const dayEnd = scheduledExamDayEnd(exam)
   const duration = examDurationMinutes(schoolId, exam)
@@ -3070,7 +3098,9 @@ async function start() {
   const prepQuestionColumns = rows('PRAGMA table_info(prep_questions)').map((column) => column.name)
   if (!prepQuestionColumns.includes('active')) db.run('ALTER TABLE prep_questions ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
   if (!prepQuestionColumns.includes('image')) db.run('ALTER TABLE prep_questions ADD COLUMN image TEXT')
-  if (!rows('PRAGMA table_info(exams)').map((column) => column.name).includes('shuffle')) db.run('ALTER TABLE exams ADD COLUMN shuffle INTEGER NOT NULL DEFAULT 0')
+  const examColumns = rows('PRAGMA table_info(exams)').map((column) => column.name)
+  if (!examColumns.includes('shuffle')) db.run('ALTER TABLE exams ADD COLUMN shuffle INTEGER NOT NULL DEFAULT 0')
+  if (!examColumns.includes('student_ids')) db.run('ALTER TABLE exams ADD COLUMN student_ids TEXT')
   db.run('CREATE INDEX IF NOT EXISTS prep_questions_exam_subject ON prep_questions (exam, subject)')
   db.run('CREATE TABLE IF NOT EXISTS prep_practice_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, question_ids TEXT NOT NULL, started_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, completed_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS prep_attempts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, score INTEGER NOT NULL, total INTEGER NOT NULL, created_at TEXT NOT NULL)')
