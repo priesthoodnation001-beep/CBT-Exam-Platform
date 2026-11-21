@@ -4,16 +4,17 @@ import type { ImportedQuestion } from './questionImport'
 import './import.css'
 import QuestionPrintButton from './QuestionPrintButton'
 import QuestionContent from './QuestionContent'
+import { DiagramGallery, DiagramPicker } from './QuestionDiagrams'
 import { API_BASE } from './apiBase'
 
 type Exam = { id: string; subject: string }
-type Question = { id: string; subject: string; text: string; options: string[]; answer?: number }
+type Question = { id: string; subject: string; text: string; options: string[]; answer?: number; images?: string[] }
 type SubmittedSubject = { subject: string; duration: number; status: 'pending' | 'approved' | 'rejected'; rejection_reason?: string; review_comment?: string; approved_at?: string; canEdit: boolean; questions: Question[] }
-type DraftQuestion = { subject: string; text: string; options: string[]; answer: number; examId?: string }
-type SavedDraft = { id: string; subject: string; duration: number; questions: { text: string; options: string[]; answer: number }[]; updatedAt: string }
+type DraftQuestion = { subject: string; text: string; options: string[]; answer: number; examId?: string; images?: string[] }
+type SavedDraft = { id: string; subject: string; duration: number; questions: { text: string; options: string[]; answer: number; images?: string[] }[]; updatedAt: string }
 type Props = { questions: Question[]; exams: Exam[]; submissions: SubmittedSubject[]; token: string | null; refresh: () => Promise<void>; showNotice: (message: string) => void; aiReady?: boolean; aiRemaining?: number }
 
-const emptyForm = { text: '', options: ['', '', '', ''], answer: 0 }
+const emptyForm = { text: '', options: ['', '', '', ''], answer: 0, images: [] as string[] }
 const MATH_SYMBOLS = ['±', '×', '÷', '√', 'π', '∑', '∫', '≤', '≥', '≠', '∞', '°', '₀₁₂₃₄₅₆₇₈₉', '⁰¹²³⁴⁵⁶⁷⁸⁹', '→', '⇌']
 const FORMULA_TEMPLATES = ['a² + b² = c²', 'F = ma', 'v = u + at', 'H₂O', 'E = mc²']
 
@@ -100,17 +101,17 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
 
   const makeQuestion = (): DraftQuestion | null => {
     if (!subjectName || !form.text.trim() || form.options.some((option) => !option.trim())) { showNotice('Enter the subject name, the question, and all four options first.'); return null }
-    return { subject: subjectName, text: form.text.trim(), options: form.options.map((option) => option.trim()), answer: form.answer, examId: examFor(subjectName) }
+    return { subject: subjectName, text: form.text.trim(), options: form.options.map((option) => option.trim()), answer: form.answer, images: form.images, examId: examFor(subjectName) }
   }
   const saveDraft = () => { const question = makeQuestion(); if (!question) return false; setDraft(draft.length > step ? draft.map((item, index) => index === step ? question : item) : [...draft, question]); return true }
-  const nextStep = () => { if (!saveDraft()) return; const nextIndex = step + 1; setStep(nextIndex); const item = draft[nextIndex]; setForm(item ? { text: item.text, options: item.options, answer: item.answer } : emptyForm) }
-  const previousStep = () => { if (step === 0) return; const previous = draft[step - 1]; setStep(step - 1); setForm({ text: previous.text, options: previous.options, answer: previous.answer }) }
+  const nextStep = () => { if (!saveDraft()) return; const nextIndex = step + 1; setStep(nextIndex); const item = draft[nextIndex]; setForm(item ? { text: item.text, options: item.options, answer: item.answer, images: item.images ?? [] } : emptyForm) }
+  const previousStep = () => { if (step === 0) return; const previous = draft[step - 1]; setStep(step - 1); setForm({ text: previous.text, options: previous.options, answer: previous.answer, images: previous.images ?? [] }) }
 
   // Save the work so far (even unfinished questions) and carry on another day. Nothing is sent to the Admin yet.
   const saveForLater = async () => {
     if (!subjectName) { showNotice('Enter the subject name first.'); return }
-    const saved = draft.map((item) => ({ text: item.text, options: item.options, answer: item.answer }))
-    const onScreen = { text: form.text, options: form.options, answer: form.answer }
+    const saved = draft.map((item) => ({ text: item.text, options: item.options, answer: item.answer, images: item.images ?? [] }))
+    const onScreen = { text: form.text, options: form.options, answer: form.answer, images: form.images }
     const hasCurrent = Boolean(form.text.trim() || form.options.some((option) => option.trim()))
     const list = hasCurrent ? (draft.length > step ? saved.map((item, index) => index === step ? onScreen : item) : [...saved, onScreen]) : saved
     if (!list.length) { showNotice('Write at least one question before saving.'); return }
@@ -126,10 +127,10 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
 
   const continueDraft = (saved: SavedDraft) => {
     if ((draft.length > 0 || form.text.trim()) && !window.confirm('Replace what is on screen with this saved draft? Save your current work first if you want to keep it.')) return
-    const items: DraftQuestion[] = saved.questions.map((item) => ({ subject: saved.subject, text: item.text, options: item.options, answer: item.answer, examId: examFor(saved.subject) }))
+    const items: DraftQuestion[] = saved.questions.map((item) => ({ subject: saved.subject, text: item.text, options: item.options, answer: item.answer, images: item.images ?? [], examId: examFor(saved.subject) }))
     const last = items.length - 1
     setSubject(saved.subject); setDuration(saved.duration); setDraft(items); setStep(last)
-    setForm({ text: items[last].text, options: items[last].options, answer: items[last].answer })
+    setForm({ text: items[last].text, options: items[last].options, answer: items[last].answer, images: items[last].images ?? [] })
     showNotice(`Draft "${saved.subject}" opened with ${items.length} question${items.length === 1 ? '' : 's'}. Use Previous to go back through them.`)
   }
 
@@ -148,7 +149,7 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
     const added: DraftQuestion[] = items.map((item) => ({ subject: subjectName, text: item.text, options: item.options, answer: item.answer, examId: examFor(subjectName) }))
     const merged = [...base, ...added]
     const first = merged[base.length]
-    setDraft(merged); setStep(base.length); setForm({ text: first.text, options: first.options, answer: first.answer })
+    setDraft(merged); setStep(base.length); setForm({ text: first.text, options: first.options, answer: first.answer, images: first.images ?? [] })
     setImportOpen(false)
     showNotice(`${added.length} question${added.length === 1 ? '' : 's'} imported. Use Next to check them, then Submit.`)
   }
@@ -169,7 +170,7 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
       const generated: DraftQuestion[] = body.questions.map((item: { text: string; options: string[]; answer: number }) => ({ subject: subjectName, text: item.text, options: item.options, answer: item.answer, examId: examFor(subjectName) }))
       const merged = [...base, ...generated]
       const first = merged[base.length]
-      setDraft(merged); setStep(base.length); setForm({ text: first.text, options: first.options, answer: first.answer })
+      setDraft(merged); setStep(base.length); setForm({ text: first.text, options: first.options, answer: first.answer, images: first.images ?? [] })
       if (typeof body.remaining === 'number') setAiLeft(body.remaining)
       showNotice(`${generated.length} AI questions added. Use Next to read and check each one before you submit.`)
     } catch { showNotice('Could not reach the AI helper. Check your connection.') } finally { setAiBusy(false) }
@@ -177,7 +178,7 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
 
   const editSubmittedQuestion = (question: Question) => {
     setEditingQuestionId(question.id)
-    setEditForm({ text: question.text, options: [...question.options], answer: question.answer ?? 0 })
+    setEditForm({ text: question.text, options: [...question.options], answer: question.answer ?? 0, images: question.images ?? [] })
   }
 
   const saveSubmittedQuestion = async (questionId: string) => {
@@ -212,6 +213,7 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
         text: addQuestionForm.text.trim(),
         options: addQuestionForm.options.map((option) => option.trim()),
         answer: addQuestionForm.answer,
+        images: addQuestionForm.images,
         examId: examFor(submission.subject)
       })
       await refresh()
@@ -269,7 +271,7 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
     if (duration < 1 || duration > 30) { showNotice('Subject time must be between 1 and 30 minutes.'); return }
     const merged = draft.length > step ? draft.map((item, index) => index === step ? current : item) : [...draft, current]
     const unfinished = merged.findIndex((item) => !item.text.trim() || item.options.some((option) => !option.trim()))
-    if (unfinished !== -1) { setDraft(merged); setStep(unfinished); setForm({ text: merged[unfinished].text, options: merged[unfinished].options, answer: merged[unfinished].answer }); showNotice(`Question ${unfinished + 1} is not finished. Complete it before you submit.`); return }
+    if (unfinished !== -1) { setDraft(merged); setStep(unfinished); setForm({ text: merged[unfinished].text, options: merged[unfinished].options, answer: merged[unfinished].answer, images: merged[unfinished].images ?? [] }); showNotice(`Question ${unfinished + 1} is not finished. Complete it before you submit.`); return }
     const finalDraft = merged.map((item) => ({ ...item, subject: subjectName, examId: examFor(subjectName) }))
     try {
       const setting = await fetch(`${API_BASE}/api/subjects`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ subject: subjectName, duration }) })
@@ -290,7 +292,7 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
     if (unfinished !== -1) {
       setDraft(merged)
       setStep(unfinished)
-      setForm({ text: merged[unfinished].text, options: merged[unfinished].options, answer: merged[unfinished].answer })
+      setForm({ text: merged[unfinished].text, options: merged[unfinished].options, answer: merged[unfinished].answer, images: merged[unfinished].images ?? [] })
       showNotice(`Question ${unfinished + 1} is not finished. Complete it before previewing.`)
       return
     }
@@ -342,9 +344,10 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
                         <label>Question text<textarea value={editForm.text} onChange={(event) => setEditForm((current) => ({ ...current, text: event.target.value }))} /></label>
                         <div className="option-grid">{editForm.options.map((option, optionIndex) => <label key={optionIndex}>Option {String.fromCharCode(65 + optionIndex)}<input value={option} onChange={(event) => setEditForm((current) => ({ ...current, options: current.options.map((item, index) => index === optionIndex ? event.target.value : item) }))} /></label>)}</div>
                         <label>Correct answer<select value={editForm.answer} onChange={(event) => setEditForm((current) => ({ ...current, answer: Number(event.target.value) }))}>{editForm.options.map((_, optionIndex) => <option value={optionIndex} key={optionIndex}>Option {String.fromCharCode(65 + optionIndex)}</option>)}</select></label>
+                        <DiagramPicker token={token} images={editForm.images} onChange={(images) => setEditForm((current) => ({ ...current, images }))} showNotice={showNotice} />
                         <div className="wizard-actions"><button className="secondary-button" type="button" onClick={() => setEditingQuestionId(null)}>Cancel</button><button className="primary-button" type="button" disabled={savingReviewQuestion} onClick={() => void saveSubmittedQuestion(question.id)}>{savingReviewQuestion ? 'Saving...' : 'Save correction'}</button></div>
                       </div>
-                      : <><p>{question.text}</p><ol type="A">{question.options.map((option, optionIndex) => <li key={optionIndex}>{option}{question.answer === optionIndex ? ' (correct answer)' : ''}</li>)}</ol></>}
+                      : <><p>{question.text}</p><DiagramGallery images={question.images} /><ol type="A">{question.options.map((option, optionIndex) => <li key={optionIndex}>{option}{question.answer === optionIndex ? ' (correct answer)' : ''}</li>)}</ol></>}
                   </article>
                 ))}
               </div>
@@ -355,6 +358,7 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
                     <label>Question text<textarea value={addQuestionForm.text} onChange={(event) => setAddQuestionForm((current) => ({ ...current, text: event.target.value }))} /></label>
                     <div className="option-grid">{addQuestionForm.options.map((option, optionIndex) => <label key={optionIndex}>Option {String.fromCharCode(65 + optionIndex)}<input value={option} onChange={(event) => setAddQuestionForm((current) => ({ ...current, options: current.options.map((item, index) => index === optionIndex ? event.target.value : item) }))} /></label>)}</div>
                     <label>Correct answer<select value={addQuestionForm.answer} onChange={(event) => setAddQuestionForm((current) => ({ ...current, answer: Number(event.target.value) }))}>{addQuestionForm.options.map((_, optionIndex) => <option value={optionIndex} key={optionIndex}>Option {String.fromCharCode(65 + optionIndex)}</option>)}</select></label>
+                    <DiagramPicker token={token} images={addQuestionForm.images} onChange={(images) => setAddQuestionForm((current) => ({ ...current, images }))} showNotice={showNotice} />
                     <div className="wizard-actions"><button className="secondary-button" type="button" onClick={() => setAddingToSubject(null)}>Cancel</button><button className="primary-button" type="button" disabled={savingAddedQuestion} onClick={() => void addSubmittedQuestion(submission)}>{savingAddedQuestion ? 'Adding...' : 'Add question'}</button></div>
                   </div>
                   : <button className="secondary-button small-button add-submitted-question-button" type="button" onClick={() => { setAddQuestionForm(emptyForm); setAddingToSubject(submission.subject) }}>+ Add a question</button>)}
@@ -425,10 +429,12 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
               {form.options.map((_, index) => <option value={index} key={index}>Option {String.fromCharCode(65 + index)}</option>)}
             </select>
           </label>
+          <DiagramPicker token={token} images={form.images} onChange={(images) => setForm((current) => ({ ...current, images }))} showNotice={showNotice} />
           {(form.text.trim() || form.options.some(Boolean)) && (
             <section className="question-authoring-preview">
               <p className="eyebrow">Student preview</p>
               <QuestionContent content={form.text} />
+              <DiagramGallery images={form.images} />
               <ol type="A">{form.options.map((option, index) => <li key={index}><QuestionContent content={option || `Option ${String.fromCharCode(65 + index)}`} /></li>)}</ol>
             </section>
           )}
@@ -448,10 +454,11 @@ export default function SubjectQuestionWizard({ questions, exams, submissions, t
                 <article className="question-set-review-item" key={`${index}-${question.text}`}>
                   <div className="submitted-question-heading"><strong>Question {index + 1}</strong><button className="text-button" type="button" onClick={() => {
                     setStep(index)
-                    setForm({ text: question.text, options: question.options, answer: question.answer })
+                    setForm({ text: question.text, options: question.options, answer: question.answer, images: question.images ?? [] })
                     setPreviewOpen(false)
                   }}>Edit</button></div>
                   <QuestionContent content={question.text} />
+                  <DiagramGallery images={question.images} />
                   <ol type="A">{question.options.map((option, optionIndex) => <li className={question.answer === optionIndex ? 'approval-correct-option' : ''} key={optionIndex}>
                     <QuestionContent content={option} />{question.answer === optionIndex && <strong> · Correct answer</strong>}
                   </li>)}</ol>

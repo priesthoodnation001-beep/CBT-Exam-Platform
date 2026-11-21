@@ -16,7 +16,7 @@ export default function useMinimumWelcomeDuration(active: boolean) {
       return
     }
 
-    const remaining = Math.max(0, 5_000 - (Date.now() - startedAt.current))
+    const remaining = Math.max(0, 2_000 - (Date.now() - startedAt.current))
     const timer = window.setTimeout(() => {
       startedAt.current = null
       setVisible(false)

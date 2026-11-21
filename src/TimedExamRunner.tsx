@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import QuestionContent from './QuestionContent'
+import { DiagramGallery } from './QuestionDiagrams'
 import './exam-runner.css'
 
 // The screen a student writes the exam on. It shows only the time allowed and the countdown, with no start or end clock time.
 // When the time runs out, the exam is submitted automatically with the answers chosen so far.
 
-type RunnerQuestion = { id: string; text: string; options: string[] }
+type RunnerQuestion = { id: string; text: string; options: string[]; images?: string[] }
 type RunnerExam = { title: string; subject: string; duration: number; subject_duration?: number }
 
 type Props = {
@@ -125,6 +126,7 @@ export default function TimedExamRunner({ exam, questions, selectedAnswers, setS
           <section className="ex-card">
             <p className="ex-count">Question {current + 1} of {questions.length}</p>
             <div className="ex-question" role="heading" aria-level={2}><QuestionContent content={question.text} /></div>
+            <DiagramGallery images={question.images} />
             <div className="ex-options" role="radiogroup" aria-label="Choose one answer">
               {question.options.map((option, index) => (
                 <button key={index} type="button" role="radio" aria-checked={selectedAnswers[question.id] === index} disabled={timeUp} className={`ex-option ${selectedAnswers[question.id] === index ? 'chosen' : ''}`} onClick={() => setSelectedAnswers((chosen) => ({ ...chosen, [question.id]: index }))}>

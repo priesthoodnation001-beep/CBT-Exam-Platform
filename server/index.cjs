@@ -105,6 +105,7 @@ function publicQuestion(question, includeAnswer = false) {
   const result = { id: question.id, examId: question.exam_id, subject: question.subject, text: question.text, options: JSON.parse(question.options) }
   if (includeAnswer) result.answer = Number(question.answer)
   if (Number.isFinite(Number(question.created_at))) result.createdAt = Number(question.created_at)
+  if (question.images) { try { const list = JSON.parse(question.images); if (Array.isArray(list) && list.length) result.images = list.map((name) => String(name)) } catch { /* no pictures */ } }
   return result
 }
 
@@ -744,7 +745,7 @@ app.get('/api/data', authenticate, (request, response) => {
       ...subject,
       canEdit: subject.submitted_by === request.user.id,
       questions: subject.submitted_by === request.user.id
-        ? rows('SELECT id, exam_id AS examId, subject, text, options, answer FROM questions WHERE school_id = ? AND subject = ? ORDER BY created_at', [schoolId, subject.subject]).map((question) => publicQuestion(question, true))
+        ? rows('SELECT id, exam_id AS examId, subject, text, options, answer, images FROM questions WHERE school_id = ? AND subject = ? ORDER BY created_at', [schoolId, subject.subject]).map((question) => publicQuestion(question, true))
         : []
     }))
     : []
@@ -764,12 +765,12 @@ app.get('/api/data', authenticate, (request, response) => {
     : allExams // student
   ).map(({ studentIds, ...exam }) => (isStudent ? exam : { ...exam, studentIds: parseExamStudentIds(studentIds) })) // students never see who else was pickeds only see their class and exams that have not expired
   const questionSql = isStudent
-    ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? ORDER BY questions.created_at'
+    ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer, questions.images FROM questions JOIN subject_settings ON subject_settings.subject = questions.subject AND subject_settings.school_id = questions.school_id AND subject_settings.approved = 1 WHERE questions.school_id = ? ORDER BY questions.created_at'
     : request.user.role === 'Admin'
-      ? "SELECT id, exam_id, subject, text, options, answer, created_at FROM questions WHERE school_id = ? AND NOT EXISTS (SELECT 1 FROM subject_settings WHERE subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject AND subject_settings.status = 'rejected') ORDER BY created_at"
+      ? "SELECT id, exam_id, subject, text, options, answer, images, created_at FROM questions WHERE school_id = ? AND NOT EXISTS (SELECT 1 FROM subject_settings WHERE subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject AND subject_settings.status = 'rejected') ORDER BY created_at"
       : request.user.role === 'Teacher'
-        ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer, questions.created_at FROM questions JOIN subject_settings ON subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject WHERE questions.school_id = ? AND subject_settings.submitted_by = ? ORDER BY questions.created_at'
-        : 'SELECT id, exam_id, subject, text, options, answer, created_at FROM questions WHERE school_id = ? ORDER BY created_at'
+        ? 'SELECT questions.id, questions.exam_id, questions.subject, questions.text, questions.options, questions.answer, questions.images, questions.created_at FROM questions JOIN subject_settings ON subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject WHERE questions.school_id = ? AND subject_settings.submitted_by = ? ORDER BY questions.created_at'
+        : 'SELECT id, exam_id, subject, text, options, answer, images, created_at FROM questions WHERE school_id = ? ORDER BY created_at'
   let questions = rows(questionSql, request.user.role === 'Teacher' ? [schoolId, request.user.id] : [schoolId]).map((question) => publicQuestion(question, !isStudent))
   if (isStudent) {
     // For every exam with shuffle switched on, this student's questions come in their own fixed random order,
@@ -892,7 +893,7 @@ app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) =
     }
     if (date <= new Date().toISOString().slice(0, 10)) return response.status(400).json({ error: 'Choose a future date for the archived-question exam.' })
     const sourceQuestions = rows(
-      `SELECT id, subject, text, options, answer FROM questions WHERE school_id = ? AND id IN (${selectedQuestionIds.map(() => '?').join(',')})`,
+      `SELECT id, subject, text, options, answer, images FROM questions WHERE school_id = ? AND id IN (${selectedQuestionIds.map(() => '?').join(',')})`,
       [request.user.schoolId, ...selectedQuestionIds]
     )
     if (sourceQuestions.length !== selectedQuestionIds.length) return response.status(400).json({ error: 'One or more selected questions are no longer available.' })
@@ -909,8 +910,8 @@ app.post('/api/exams', authenticate, requireRole('Admin'), (request, response) =
         durationMinutes, sourceQuestions.length, studentIdsJson ? '' : String(classSection || '').trim().slice(0, 1000), shuffleFlag, studentIdsJson
       ])
       for (const question of sourceQuestions) {
-        db.run('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
-          crypto.randomUUID(), request.user.schoolId, id, question.subject, question.text, question.options, question.answer, now
+        db.run('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at, images) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+          crypto.randomUUID(), request.user.schoolId, id, question.subject, question.text, question.options, question.answer, now, question.images || null
         ])
       }
       db.run('COMMIT')
@@ -940,13 +941,27 @@ app.delete('/api/exams/:id', authenticate, requireRole('Admin'), (request, respo
 /* ---------- teacher drafts: save unfinished questions and carry on another day ---------- */
 
 // Drafts may be unfinished, so blanks are allowed here (they are checked again at Submit).
+// Keeps only real picture file names (at most 4) that exist in the diagram folder.
+function cleanQuestionImages(input) {
+  if (!Array.isArray(input)) return []
+  const names = []
+  for (const item of input) {
+    const name = String(item || '')
+    if (!DIAGRAM_FILE.test(name) || names.includes(name)) continue
+    if (!fs.existsSync(path.join(DIAGRAM_DIR, name))) continue
+    names.push(name)
+    if (names.length >= 4) break
+  }
+  return names
+}
+
 function cleanDraftQuestions(input) {
   if (!Array.isArray(input)) return []
   return input.slice(0, 500).map((item) => {
     const options = Array.isArray(item?.options) ? item.options.slice(0, 4).map((option) => String(option ?? '').slice(0, 300)) : []
     while (options.length < 4) options.push('')
     const answer = Number(item?.answer)
-    return { text: String(item?.text ?? '').slice(0, 2000), options, answer: Number.isInteger(answer) && answer >= 0 && answer <= 3 ? answer : 0 }
+    return { text: String(item?.text ?? '').slice(0, 2000), options, answer: Number.isInteger(answer) && answer >= 0 && answer <= 3 ? answer : 0, images: cleanQuestionImages(item?.images) }
   }).filter((item) => item.text.trim() || item.options.some((option) => option.trim()))
 }
 
@@ -1055,28 +1070,33 @@ app.post('/api/subjects/:subject/reject', authenticate, requireRole('Admin'), (r
 
 app.put('/api/teacher/questions/:id', authenticate, requireRole('Teacher'), (request, response) => {
   const questionId = String(request.params.id)
-  const { text, options, answer } = request.body || {}
+  const { text, options, answer, images } = request.body || {}
   if (!String(text || '').trim() || String(text).length > 2000 || !Array.isArray(options) || options.length !== 4 || options.some((option) => !String(option || '').trim() || String(option).length > 300) || !Number.isInteger(Number(answer)) || Number(answer) < 0 || Number(answer) > 3) {
     return response.status(400).json({ error: 'Enter the question, all four options, and a valid correct answer.' })
   }
-  const question = rows(`SELECT questions.id, questions.subject FROM questions
+  const question = rows(`SELECT questions.id, questions.subject, questions.images FROM questions
     JOIN subject_settings ON subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject
     WHERE questions.id = ? AND questions.school_id = ? AND subject_settings.submitted_by = ?`, [questionId, request.user.schoolId, request.user.id]).at(0)
   if (!question) return response.status(404).json({ error: 'Question not found in your submitted subjects.' })
-  run('UPDATE questions SET text = ?, options = ?, answer = ? WHERE id = ? AND school_id = ?', [String(text).trim(), JSON.stringify(options.map((option) => String(option).trim())), Number(answer), questionId, request.user.schoolId])
+  // pictures: when the app sends a list it replaces the old one; when it sends none the old pictures stay
+  const newImages = Array.isArray(images) ? cleanQuestionImages(images) : null
+  const savedImages = newImages === null ? question.images : (newImages.length ? JSON.stringify(newImages) : null)
+  run('UPDATE questions SET text = ?, options = ?, answer = ?, images = ? WHERE id = ? AND school_id = ?', [String(text).trim(), JSON.stringify(options.map((option) => String(option).trim())), Number(answer), savedImages, questionId, request.user.schoolId])
+  if (newImages !== null) { try { for (const name of JSON.parse(question.images || '[]')) if (!newImages.includes(name)) removeDiagramFile(name) } catch { /* nothing to clean */ } }
   run("UPDATE subject_settings SET approved = 0, approved_at = NULL, status = CASE WHEN status = 'approved' THEN 'pending' ELSE status END WHERE school_id = ? AND subject = ?", [request.user.schoolId, question.subject])
   response.json({ message: 'Question updated.' })
 })
 
 app.delete('/api/teacher/questions/:id', authenticate, requireRole('Teacher'), (request, response) => {
   const questionId = String(request.params.id)
-  const question = rows(`SELECT questions.id, questions.subject, subject_settings.approved
+  const question = rows(`SELECT questions.id, questions.subject, questions.images, subject_settings.approved
     FROM questions JOIN subject_settings
       ON subject_settings.school_id = questions.school_id AND subject_settings.subject = questions.subject
     WHERE questions.id = ? AND questions.school_id = ? AND subject_settings.submitted_by = ?`,
   [questionId, request.user.schoolId, request.user.id]).at(0)
   if (!question) return response.status(404).json({ error: 'Question not found in your submitted subjects.' })
   run('DELETE FROM questions WHERE id = ? AND school_id = ?', [questionId, request.user.schoolId])
+  try { for (const name of JSON.parse(question.images || '[]')) removeDiagramFile(name) } catch { /* nothing to clean */ }
   if (question.approved) run("UPDATE subject_settings SET approved = 0, approved_at = NULL, status = 'pending', review_comment = NULL WHERE school_id = ? AND subject = ?", [request.user.schoolId, question.subject])
   sync.recordTombstone(request.user.schoolId, 'question', questionId)
   response.sendStatus(204)
@@ -1117,14 +1137,15 @@ app.delete('/api/subjects/:subject', authenticate, requireRole('Admin'), (reques
 })
 
 app.post('/api/questions', authenticate, requireRole('Teacher'), (request, response) => {
-  const { subject, text, options, answer, examId = null } = request.body || {}
+  const { subject, text, options, answer, examId = null, images } = request.body || {}
+  const imageList = cleanQuestionImages(images)
   if (!subject || !text || !Array.isArray(options) || options.length !== 4) return response.status(400).json({ error: 'Subject, question text, and four options are required.' })
   const subjectName = String(subject).trim()
   const setting = rows('SELECT submitted_by, approved FROM subject_settings WHERE school_id = ? AND subject = ?', [request.user.schoolId, subjectName]).at(0)
   if (!setting || setting.submitted_by !== request.user.id) return response.status(403).json({ error: 'Create or claim your subject question set before adding questions.' })
   if (setting?.approved) run("UPDATE subject_settings SET approved = 0, approved_at = NULL, status = 'pending', review_comment = NULL WHERE school_id = ? AND subject = ?", [request.user.schoolId, subjectName])
   const id = crypto.randomUUID()
-  run('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, request.user.schoolId, examId, subjectName, text, JSON.stringify(options), Number(answer), Date.now()])
+  run('INSERT INTO questions (id, school_id, exam_id, subject, text, options, answer, created_at, images) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, request.user.schoolId, examId, subjectName, text, JSON.stringify(options), Number(answer), Date.now(), imageList.length ? JSON.stringify(imageList) : null])
   response.status(201).json({ question: publicQuestion(rows('SELECT * FROM questions WHERE id = ?', [id])[0], true) })
 })
 
@@ -2627,11 +2648,12 @@ function diagramExtension(buffer) {
 function removeDiagramFile(name) {
   if (!name || !DIAGRAM_FILE.test(name)) return
   if (rows('SELECT id FROM prep_questions WHERE image = ?', [name]).length) return // another question still uses it
+  if (rows('SELECT id FROM questions WHERE images LIKE ?', ['%' + name + '%']).length) return
   try { fs.unlinkSync(path.join(DIAGRAM_DIR, name)) } catch { /* already gone */ }
 }
 
 // Students' browsers load the picture with a plain image tag, so this route has no login; the file names are long random codes.
-app.get('/api/prep/diagrams/:file', (request, response) => {
+app.get(['/api/prep/diagrams/:file', '/api/diagrams/:file'], (request, response) => {
   const file = String(request.params.file || '')
   if (!DIAGRAM_FILE.test(file)) return response.status(404).end()
   const full = path.join(DIAGRAM_DIR, file)
@@ -2639,6 +2661,17 @@ app.get('/api/prep/diagrams/:file', (request, response) => {
   response.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
   response.setHeader('X-Content-Type-Options', 'nosniff')
   response.sendFile(full)
+})
+
+app.post('/api/diagrams', authenticate, requireRole('Teacher'), express.raw({ type: 'image/*', limit: '4mb' }), (request, response) => {
+  const buffer = request.body
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return response.status(400).json({ error: 'Choose a picture file (PNG, JPG, WEBP or GIF).' })
+  const extension = diagramExtension(buffer)
+  if (!extension) return response.status(400).json({ error: 'That file is not a PNG, JPG, WEBP or GIF picture.' })
+  fs.mkdirSync(DIAGRAM_DIR, { recursive: true })
+  const name = `${crypto.randomUUID()}.${extension}`
+  fs.writeFileSync(path.join(DIAGRAM_DIR, name), buffer)
+  response.json({ image: name })
 })
 
 app.put('/api/creator/prep/questions/:id/diagram', creatorAuth, express.raw({ type: 'image/*', limit: '4mb' }), (request, response) => {
@@ -3101,6 +3134,7 @@ async function start() {
   const examColumns = rows('PRAGMA table_info(exams)').map((column) => column.name)
   if (!examColumns.includes('shuffle')) db.run('ALTER TABLE exams ADD COLUMN shuffle INTEGER NOT NULL DEFAULT 0')
   if (!examColumns.includes('student_ids')) db.run('ALTER TABLE exams ADD COLUMN student_ids TEXT')
+  if (!rows('PRAGMA table_info(questions)').map((column) => column.name).includes('images')) db.run('ALTER TABLE questions ADD COLUMN images TEXT')
   db.run('CREATE INDEX IF NOT EXISTS prep_questions_exam_subject ON prep_questions (exam, subject)')
   db.run('CREATE TABLE IF NOT EXISTS prep_practice_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, question_ids TEXT NOT NULL, started_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, completed_at TEXT)')
   db.run('CREATE TABLE IF NOT EXISTS prep_attempts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, exam TEXT NOT NULL, subject TEXT NOT NULL, score INTEGER NOT NULL, total INTEGER NOT NULL, created_at TEXT NOT NULL)')

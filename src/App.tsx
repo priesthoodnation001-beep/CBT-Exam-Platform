@@ -33,7 +33,7 @@ const roleValue = (value: string | null | undefined): Role | null => value?.toLo
 const appRole: Role | null = roleValue(new URLSearchParams(window.location.search).get('appRole')) || roleValue(import.meta.env.VITE_APP_ROLE)
 type Account = { id: string; role: Role; name: string; username?: string; studentId?: string; classSection?: string; schoolName?: string; schoolSlug?: string }
 type Exam = { id: string; title: string; classSection?: string; subject: string; date: string; time: string; duration: number; questions: number; status: 'Scheduled' | 'Draft' | 'Published'; subject_duration: number; subject_approved: number; taken?: number; shuffle?: number; studentIds?: string[] }
-type Question = { id: string; examId?: string; subject: string; text: string; options: string[]; answer?: number; createdAt?: number }
+type Question = { id: string; examId?: string; subject: string; text: string; options: string[]; answer?: number; createdAt?: number; images?: string[] }
 type Result = { id: string; exam_title: string; student_name: string; student_id: string; score: number; total: number; submitted_at: string; time_spent?: number | null; subject?: string | null; exam_date?: string | null; exam_time?: string | null; class_section?: string | null }
 type SubjectSetting = { subject: string; duration: number; approved: number; approved_at?: string; status: 'pending' | 'approved' | 'rejected'; rejection_reason?: string; review_comment?: string; submitted_by?: string }
 type TeacherSubject = SubjectSetting & { canEdit: boolean; questions: Question[] }
